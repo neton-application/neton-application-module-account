@@ -168,9 +168,9 @@ class AuthController(
     }
 }
 
-/** Nginx overwrites X-Real-IP, unlike X-Forwarded-For which may contain a client-supplied prefix. */
+/**
+ * 认证与设备审计只使用 TCP 对端地址。8080 当前可被客户端直连，信任 X-Real-IP 会允许
+ * 任意客户端伪造登录来源。以后若只允许受信反向代理访问，应在网关层统一解析并覆盖来源。
+ */
 private fun HttpRequest.clientIp(): String? =
-    header("X-Real-IP")
-        ?.trim()
-        ?.takeIf(String::isNotEmpty)
-        ?: remoteAddress.trim().takeIf(String::isNotEmpty)
+    remoteAddress.trim().takeIf(String::isNotEmpty)

@@ -35,6 +35,7 @@ class MemberAuthLogic(
     private val inviteLogic: MemberInviteLogic? = null,
     private val authPolicy: port.MemberAuthPolicy = port.MemberAuthPolicy(),
     private val welcomePort: port.MemberWelcomePort? = null,
+    private val loginDeviceLogic: MemberLoginDeviceLogic? = null,
 ) {
 
     companion object {
@@ -98,7 +99,7 @@ class MemberAuthLogic(
         recordSuccessfulLogin(member, remoteIp)
 
         log.info("member.login.success", mapOf("userId" to member.id, "mobile" to maskMobile(mobile)))
-        return buildResponse(member.id, request.device)
+        return buildResponse(member.id, request.device, remoteIp)
     }
 
     suspend fun smsLogin(request: MemberLoginRequest, remoteIp: String? = null): MemberLoginResponse {
@@ -126,7 +127,7 @@ class MemberAuthLogic(
         recordSuccessfulLogin(member, remoteIp)
 
         log.info("member.sms.login.success", mapOf("userId" to member.id, "mobile" to maskMobile(mobile)))
-        return buildResponse(member.id, request.device)
+        return buildResponse(member.id, request.device, remoteIp)
     }
 
     /**
@@ -305,7 +306,7 @@ class MemberAuthLogic(
         recordSuccessfulLogin(member, remoteIp)
 
         log.info("member.social.login.success", mapOf("userId" to member.id, "socialType" to socialType))
-        return buildResponse(member.id, device)
+        return buildResponse(member.id, device, remoteIp)
     }
 
     // --- Private helpers ---
@@ -417,7 +418,7 @@ class MemberAuthLogic(
                 log.info("member.register.username", mapOf("userId" to it.id, "username" to username))
             }
         }
-        return buildResponse(member.id, request.device)
+        return buildResponse(member.id, request.device, remoteIp)
     }
 
     /** 账号密码登录(USERNAME_PASSWORD 注册的用户)。 */
@@ -451,7 +452,7 @@ class MemberAuthLogic(
         }
         recordSuccessfulLogin(member, remoteIp)
         log.info("member.login.username.success", mapOf("userId" to member.id))
-        return buildResponse(member.id, device)
+        return buildResponse(member.id, device, remoteIp)
     }
 
     private fun maskUsername(username: String): String =
@@ -514,7 +515,11 @@ class MemberAuthLogic(
      * 调 server `/api/service/auth/issue` 颁发 unified token，把 [UnifiedLoginResponse] 映射成
      * 客户端可见的 [MemberLoginResponse]（spec §8）。
      */
-    private suspend fun buildResponse(uid: Long, device: LoginDeviceInfo?): MemberLoginResponse {
+    private suspend fun buildResponse(
+        uid: Long,
+        device: LoginDeviceInfo?,
+        remoteIp: String? = null,
+    ): MemberLoginResponse {
         // device 信息透传给 adapter;具体后端(privchat)再映射成它的设备/令牌请求。
         val bundle = identityAdapter.issueToken(
             IssueMemberTokenCommand(
@@ -525,9 +530,11 @@ class MemberAuthLogic(
                 deviceModel = device?.deviceModel?.takeIf { it.isNotBlank() },
                 osVersion = device?.osVersion?.takeIf { it.isNotBlank() },
                 appVersion = device?.appVersion?.takeIf { it.isNotBlank() },
-                ipAddress = device?.ipAddress?.takeIf { it.isNotBlank() },
+                // IP 必须来自服务端连接信息，不能相信客户端 JSON 自报的 ipAddress。
+                ipAddress = remoteIp.normalizedIp(),
             ),
         )
+        loginDeviceLogic?.record(uid, bundle.deviceId, device, remoteIp.normalizedIp())
         // R8.4a：注入 Post-login Required Actions。token 签发不感知它们;application 层计算后随响应下发。
         val actions = requiredActionsLogic.computeForUid(uid)
         return bundle.toMemberLoginResponse(actions)

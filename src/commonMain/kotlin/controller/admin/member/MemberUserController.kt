@@ -12,6 +12,7 @@ import logic.MemberLevelLogic
 import logic.MemberLogic
 import logic.NicknameGenerator
 import logic.MemberGeoLocationService
+import logic.MemberLoginDeviceLogic
 import model.Member
 import neton.core.annotations.Controller
 import neton.core.annotations.Get
@@ -28,6 +29,7 @@ class MemberUserController(
     private val nicknameGenerator: NicknameGenerator,
     private val memberLevelLogic: MemberLevelLogic,
     private val memberGroupLogic: MemberGroupLogic,
+    private val memberLoginDeviceLogic: MemberLoginDeviceLogic,
 ) {
     private val geoLocation = MemberGeoLocationService.fromConfig()
 
@@ -85,6 +87,10 @@ class MemberUserController(
             groupName = member.groupId?.let { memberGroupLogic.getById(it)?.name },
         )
     }
+
+    @Get("/login-devices")
+    @Permission("member:user:query")
+    suspend fun loginDevices(@Query userId: Long) = memberLoginDeviceLogic.list(userId)
 
     @Get("/page")
     @Permission("member:user:query")

@@ -48,6 +48,11 @@ object MemberRuntimeBootstrap {
         // inviteCodeRequired 走登录后 required-actions gate(bind_invite_code),不再在注册期拦截
         val requiredActionsLogic = RequiredActionsLogic(memberLogic, authPolicy, inviteLogic)
         ctx.bind(RequiredActionsLogic::class, requiredActionsLogic)
+        val loginDeviceLogic = MemberLoginDeviceLogic(
+            log = loggerFactory.get("logic.member-login-device"),
+            db = db,
+        )
+        ctx.bind(MemberLoginDeviceLogic::class, loginDeviceLogic)
         // 游客开通：依赖 identityAdapter，所以不能用 @Logic（KSP 顺序是 logics 早于 bootstrap）
         // 把本模块的配置定义登记进注册表。各模块各自登记，装配层不必知道谁有哪些配置。
         ctx.getOrNull(setting.SettingDefinitionRegistry::class)?.register(setting.MemberSettingKeys.definitions)
@@ -67,6 +72,7 @@ object MemberRuntimeBootstrap {
             inviteLogic = inviteLogic,
             authPolicy = authPolicy,
             welcomePort = ctx.getOrNull(port.MemberWelcomePort::class),
+            loginDeviceLogic = loginDeviceLogic,
         ))
         ctx.bind(MemberProfileLogic::class, MemberProfileLogic(
             log = loggerFactory.get("logic.member-profile"),
