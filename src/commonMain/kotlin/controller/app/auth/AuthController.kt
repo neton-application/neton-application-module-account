@@ -173,4 +173,10 @@ class AuthController(
  * 任意客户端伪造登录来源。以后若只允许受信反向代理访问，应在网关层统一解析并覆盖来源。
  */
 private fun HttpRequest.clientIp(): String? =
-    remoteAddress.trim().takeIf(String::isNotEmpty)
+    peerAddress.trim().takeIf(String::isNotEmpty)?.withoutPort()
+
+private fun String.withoutPort(): String = when {
+    startsWith('[') -> substringAfter('[').substringBefore(']')
+    count { it == ':' } == 1 -> substringBeforeLast(':')
+    else -> this
+}
