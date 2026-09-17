@@ -15,6 +15,8 @@ data class Member(
     /** 身份来源追溯(MEMBER-IDENTITY-ADAPTER):builtin=内置账号;privchat=privchat user_id(id 即 privchat user_id)。创建后不可由普通业务接口改。 */
     val identityProvider: String = "builtin",
     val mobile: String? = null,
+    /** 邮箱（V003）：绑定后可用于找回密码；小写归一存储 */
+    val email: String? = null,
     val password: String? = null,
     val nickname: String,
     val avatar: String? = null,

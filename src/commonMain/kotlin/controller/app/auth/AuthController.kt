@@ -139,6 +139,22 @@ class AuthController(
         memberAuthLogic.sendSmsCode(request.mobile, scene)
     }
 
+    /** 邮箱验证码（匿名只开放找回密码场景）。 */
+    @Post("/send-email-code")
+    @AllowAnonymous
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Email code sending limit exceeded, please try again later")
+    suspend fun sendEmailCode(@Body request: controller.app.member.dto.SendEmailCodeRequest) {
+        if (request.scene != "reset_password") throw BadRequestException("Scene ${request.scene} requires authentication, use /member/user/send-email-code")
+        memberAuthLogic.sendEmailCode(request.email, "reset_password")
+    }
+
+    @Put("/reset-password-by-email")
+    @AllowAnonymous
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
+    suspend fun resetPasswordByEmail(@Body request: controller.app.member.dto.ResetPasswordByEmailRequest) {
+        memberAuthLogic.resetPasswordByEmail(request.email, request.code, request.newPassword)
+    }
+
     @Post("/validate-sms-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Too many verification attempts, please try again later")

@@ -40,6 +40,7 @@ class MemberAuthLogic(
 
     companion object {
         private const val SMS_CODE_PREFIX = "sms:code:"
+        private val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
         private const val SMS_CODE_TTL_SECONDS = 300L  // 5 minutes
         private const val DEFAULT_PLATFORM = "unknown"
         // logout 黑名单 TTL：与 server unified token 默认 access TTL 对齐（1h）
@@ -237,6 +238,56 @@ class MemberAuthLogic(
             redis?.set("$SMS_CODE_PREFIX$mobile", code, ttl = SMS_CODE_TTL_SECONDS.seconds)
             log.info("member.sms.code.generated", mapOf("mobile" to maskMobile(mobile), "scene" to scene.name))
         }
+    }
+
+    // ── 邮箱验证码：找回密码（匿名）与绑定邮箱（登录后）──
+
+    fun normalizeEmail(raw: String): String {
+        val e = raw.trim().lowercase()
+        if (!EMAIL_REGEX.matches(e)) throw BadRequestException("INVALID_EMAIL")
+        return e
+    }
+
+    /**
+     * 找回密码：邮箱没绑过就**不发**也不报错（报错等于把「这个邮箱是不是我们的用户」告诉任何人）；
+     * 绑定邮箱：邮箱已被别人占用要报错，否则用户填完验证码才发现绑不上。
+     */
+    suspend fun sendEmailCode(rawEmail: String, scene: String, userId: Long? = null) {
+        val email = normalizeEmail(rawEmail)
+        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
+        when (scene) {
+            "reset_password" -> {
+                if (MemberTable.oneWhere { Member::email eq email } == null) {
+                    log.info("member.email_code.skip_unknown_email scene=$scene")
+                    return
+                }
+            }
+            "bind_email" -> {
+                val existing = MemberTable.oneWhere { Member::email eq email }
+                if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
+            }
+            else -> throw BadRequestException("INVALID_SCENE")
+        }
+        sender.sendEmailCode(email, scene)
+    }
+
+    suspend fun bindEmail(userId: Long, rawEmail: String, code: String) {
+        val email = normalizeEmail(rawEmail)
+        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
+        if (!sender.verifyEmailCode(email, code)) throw BadRequestException("INVALID_EMAIL_CODE")
+        val existing = MemberTable.oneWhere { Member::email eq email }
+        if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
+        val member = MemberTable.get(userId) ?: throw NotFoundException("Member not found: $userId")
+        MemberTable.update(member.copy(email = email))
+    }
+
+    suspend fun resetPasswordByEmail(rawEmail: String, code: String, newPassword: String) {
+        val email = normalizeEmail(rawEmail)
+        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
+        if (!sender.verifyEmailCode(email, code)) throw BadRequestException("INVALID_EMAIL_CODE")
+        val member = MemberTable.oneWhere { Member::email eq email } ?: throw BadRequestException("INVALID_EMAIL_CODE")
+        MemberTable.update(member.copy(password = PasswordHasher.hash(newPassword), sessionVersion = member.sessionVersion + 1))
+        identityAdapter.onPasswordChanged(port.MemberPasswordChangedEvent(memberId = member.id))
     }
 
     suspend fun validateSmsCode(rawMobile: String, code: String): Boolean {

@@ -9,6 +9,8 @@ import controller.app.member.dto.UpdateMemberBioRequest
 import controller.app.member.dto.UpdateMemberBirthdayRequest
 import controller.app.member.dto.UpdateMemberGenderRequest
 import controller.app.member.dto.UpdateMemberMobileRequest
+import controller.app.member.dto.SendEmailCodeRequest
+import controller.app.member.dto.BindEmailRequest
 import controller.app.member.dto.UpdateMemberNicknameRequest
 import controller.app.member.dto.UpdateMemberPasswordRequest
 import controller.app.member.dto.UpdateMemberUsernameRequest
@@ -140,6 +142,19 @@ class MemberUserController(
         identityAdapter?.onMobileChanged(
             MemberMobileChangedEvent(memberId = userId, newMobile = mobile, oldMobile = oldMobile),
         )
+    }
+
+    /** 绑定邮箱：先发码（登录态），再带码绑定。 */
+    @Post("/send-email-code")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Email code sending limit exceeded, please try again later")
+    suspend fun sendEmailCode(identity: Identity, @Body request: SendEmailCodeRequest) {
+        memberAuthLogic.sendEmailCode(request.email, "bind_email", identity.id.toLong())
+    }
+
+    @Put("/bind-email")
+    @FreshAuth
+    suspend fun bindEmail(identity: Identity, @Body request: BindEmailRequest) {
+        memberAuthLogic.bindEmail(identity.id.toLong(), request.email, request.code)
     }
 
     @Put("/update-password")

@@ -60,6 +60,33 @@ data class UpdateMemberBirthdayRequest(
 )
 
 @Serializable
+data class SendEmailCodeRequest(
+    @property:NotBlank
+    val email: String,
+    /** reset_password（匿名）| bind_email（需登录） */
+    val scene: String = "reset_password",
+)
+
+@Serializable
+data class BindEmailRequest(
+    @property:NotBlank
+    val email: String,
+    @property:NotBlank
+    val code: String,
+)
+
+@Serializable
+data class ResetPasswordByEmailRequest(
+    @property:NotBlank
+    val email: String,
+    @property:NotBlank
+    val code: String,
+    @property:NotBlank
+    @property:Size(min = 8, max = 128)
+    val newPassword: String,
+)
+
+@Serializable
 data class UpdateMemberMobileRequest(
     @property:NotBlank
     @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
