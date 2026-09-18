@@ -99,6 +99,50 @@ class MemberLogic(
         log.info("Updated member level: userId=$userId, levelId=$levelId, level=$level")
     }
 
+    /**
+     * Take [point] from a member's balance, atomically, and record it.
+     *
+     * [updatePoint] reads the balance and writes it back, which is fine for crediting but not for
+     * a debit: two concurrent redemptions each read the same balance, each write it back, and the
+     * member pays once for two items — or the balance goes negative. This uses a conditional
+     * update instead, so the database decides who wins:
+     *
+     *     UPDATE member_users SET point = point - :n WHERE id = :id AND point >= :n
+     *
+     * Zero affected rows means the balance was insufficient at the moment of the update, and
+     * nothing is written. On success the ledger row is written in the same transaction with the
+     * balance read back after the update, so `totalPoint` is the real post-debit figure.
+     *
+     * Runs inside the caller's transaction when there is one, so a caller can roll the debit back
+     * together with its own writes.
+     *
+     * @return false if the balance was insufficient; true if the debit and its ledger row were written.
+     */
+    suspend fun debitPoint(userId: Long, point: Int, bizType: Int, title: String, description: String?): Boolean {
+        require(point > 0) { "debit must be positive, got $point" }
+        var debited = false
+        db.transaction {
+            val affected = db.execute(
+                "UPDATE member_users SET point = point - :n, updated_at = :now WHERE id = :id AND point >= :n",
+                mapOf("n" to point, "id" to userId, "now" to kotlin.time.Clock.System.now().toEpochMilliseconds()),
+            )
+            if (affected == 1L) {
+                val after = MemberTable.get(userId) ?: throw IllegalArgumentException("Member not found: $userId")
+                MemberPointRecordTable.insert(MemberPointRecord(
+                    userId = userId,
+                    bizType = bizType,
+                    title = title,
+                    point = -point,
+                    totalPoint = after.point,
+                    description = description,
+                ))
+                debited = true
+            }
+        }
+        if (debited) log.info("Debited member point: userId=$userId, point=$point, bizType=$bizType")
+        return debited
+    }
+
     suspend fun updatePoint(userId: Long, point: Int, bizType: Int, title: String, description: String?) {
         val member = MemberTable.get(userId)
             ?: throw IllegalArgumentException("Member not found: $userId")
