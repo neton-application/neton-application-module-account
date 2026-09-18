@@ -35,6 +35,7 @@ class MemberGuestLogic(
         MemberTable.get(ref.memberId)?.let { return it }
 
         val member = insertMemberWithProvidedId(
+            db,
             Member(
                 id = ref.memberId,
                 nickname = displayName ?: "",

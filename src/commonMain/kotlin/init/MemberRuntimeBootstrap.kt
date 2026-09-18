@@ -64,6 +64,7 @@ object MemberRuntimeBootstrap {
         ))
         ctx.bind(MemberAuthLogic::class, MemberAuthLogic(
             log = loggerFactory.get("logic.member-auth"),
+            db = ctx.get(neton.database.api.DbContext::class),
             identityAdapter = identityAdapter,
             requiredActionsLogic = requiredActionsLogic,
             redis = redis,

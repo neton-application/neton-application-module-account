@@ -1,9 +1,8 @@
 package logic
 
-import io.github.smyrgeorge.sqlx4k.Statement
 import kotlin.time.Clock
 import model.Member
-import neton.database.adapter.sqlx.SqlxDatabase
+import neton.database.api.DbContext
 
 /**
  * Caller-provided id 写入 `member_users`，绕过 [SqlxTableAdapter.insert] 的 `id` 剥离。
@@ -13,9 +12,13 @@ import neton.database.adapter.sqlx.SqlxDatabase
  * ACCOUNT_IDENTITY §4.1），所以这里走原生 INSERT。`created_at` / `updated_at` 与
  * `mergeAutoFillForInsert` 行为对齐（epoch millis）。
  *
- * 仅 `MemberAuthLogic` 自动注册分支调用，作为 fork-divergent 代码集中在一处。
+ * 走 [DbContext.execute] 而不是 sqlx4k 全局库：前者会拿当前协程里的事务会话，
+ * 调用方把它包进 `db.transaction {}` 时失败能一起回滚。直接用 `SqlxDatabase.require()`
+ * 绕开了会话 —— 实测客服进线 10 路并发时顾客行回滚了、guest 却落了 10 行。
+ *
+ * 仅 `MemberAuthLogic` 自动注册分支与 `MemberGuestLogic` 调用，作为 fork-divergent 代码集中在一处。
  */
-internal suspend fun insertMemberWithProvidedId(member: Member): Member {
+internal suspend fun insertMemberWithProvidedId(db: DbContext, member: Member): Member {
     val now = Clock.System.now().toEpochMilliseconds()
     val sql = """
         INSERT INTO member_users (
@@ -30,26 +33,29 @@ internal suspend fun insertMemberWithProvidedId(member: Member): Member {
             :createdAt, :updatedAt
         )
     """.trimIndent()
-    val stmt = Statement.create(sql)
-        .bind("isGuest", member.isGuest)
-        .bind("id", member.id)
-        .bind("mobile", member.mobile)
-        .bind("password", member.password)
-        .bind("username", member.username)
-        .bind("usernameUpdatedAt", member.usernameUpdatedAt)
-        .bind("nickname", member.nickname)
-        .bind("avatar", member.avatar)
-        .bind("status", member.status)
-        .bind("levelId", member.levelId)
-        .bind("experience", member.experience)
-        .bind("point", member.point)
-        .bind("groupId", member.groupId)
-        .bind("registerIp", member.registerIp)
-        .bind("loginIp", member.loginIp)
-        .bind("loginDate", member.loginDate)
-        .bind("deleted", member.deleted)
-        .bind("createdAt", now)
-        .bind("updatedAt", now)
-    SqlxDatabase.require().execute(stmt).getOrThrow()
+    db.execute(
+        sql,
+        mapOf(
+            "id" to member.id,
+            "mobile" to member.mobile,
+            "password" to member.password,
+            "username" to member.username,
+            "usernameUpdatedAt" to member.usernameUpdatedAt,
+            "nickname" to member.nickname,
+            "avatar" to member.avatar,
+            "status" to member.status,
+            "levelId" to member.levelId,
+            "experience" to member.experience,
+            "point" to member.point,
+            "groupId" to member.groupId,
+            "registerIp" to member.registerIp,
+            "loginIp" to member.loginIp,
+            "loginDate" to member.loginDate,
+            "deleted" to member.deleted,
+            "isGuest" to member.isGuest,
+            "createdAt" to now,
+            "updatedAt" to now,
+        ),
+    )
     return member.copy(createdAt = now, updatedAt = now)
 }

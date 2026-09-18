@@ -27,6 +27,7 @@ import kotlin.time.Clock
 
 class MemberAuthLogic(
     private val log: Logger,
+    private val db: neton.database.api.DbContext,
     private val identityAdapter: MemberIdentityAdapter,
     private val requiredActionsLogic: RequiredActionsLogic,
     private val redis: RedisClient? = null,
@@ -337,7 +338,7 @@ class MemberAuthLogic(
                 avatar = socialUser.avatar,
                 registerIp = remoteIp.normalizedIp(),
             )
-            member = insertMemberWithProvidedId(newMember)
+            member = insertMemberWithProvidedId(db, newMember)
             social.bind(member.id, userType = 2, socialType, code, redirectUri)
             log.info("member.social.auto_register", mapOf("userId" to member.id, "socialType" to socialType))
         } else {
@@ -456,6 +457,7 @@ class MemberAuthLogic(
         ) {
             val ref = identityAdapter.createOrBindAccount(CreateMemberAccountCommand(username = username))
             insertMemberWithProvidedId(
+                db,
                 Member(
                     id = ref.memberId,
                     identityProvider = ref.provider,
@@ -536,7 +538,7 @@ class MemberAuthLogic(
             "member.sms.auto_register",
             mapOf("userId" to ref.memberId, "mobile" to maskMobile(mobile), "created" to ref.created)
         )
-        return insertMemberWithProvidedId(newMember)
+        return insertMemberWithProvidedId(db, newMember)
     }
 
     private suspend fun recordSuccessfulLogin(member: Member, remoteIp: String?) {
