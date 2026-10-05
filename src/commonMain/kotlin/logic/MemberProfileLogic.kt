@@ -240,7 +240,7 @@ class MemberProfileLogic(
 
         /** spec MODULE_MEMBER_PROFILE_SPEC §4.4 — 保留词最小集，可后续在配置中扩展。 */
         internal val USERNAME_RESERVED: Set<String> = setOf(
-            "admin", "administrator", "system", "support", "help",
+            "admin", "administrator", "system", "assistant", "support", "help",
             "root", "owner", "moderator", "mod", "bot",
             "null", "undefined", "none", "test", "user",
             "anonymous", "guest", "official", "staff",
