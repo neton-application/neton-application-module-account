@@ -1,5 +1,8 @@
 package controller.app.member
 
+import controller.app.member.dto.MemberSelfVO
+import controller.app.member.dto.toSelfVO
+
 import port.MemberIdentityAdapter
 import port.MemberMobileChangedEvent
 import port.MemberPasswordChangedEvent
@@ -58,9 +61,9 @@ class MemberUserController(
 ) {
 
     @Get("/get")
-    suspend fun get(identity: Identity): Member? {
+    suspend fun get(identity: Identity): MemberSelfVO? {
         val userId = identity.id.toLong()
-        return memberLogic.get(userId)
+        return memberLogic.get(userId)?.toSelfVO()
     }
 
     // ──────────── profile 拆分端点（spec §4） ────────────
@@ -77,7 +80,7 @@ class MemberUserController(
     suspend fun updateAvatar(
         identity: Identity,
         @Body request: UpdateMemberAvatarRequest,
-    ): Member = memberProfileLogic.updateAvatar(identity.id.toLong(), request.fileId)
+    ): MemberSelfVO = memberProfileLogic.updateAvatar(identity.id.toLong(), request.fileId).toSelfVO()
 
     @Put("/update-username")
     @FreshAuth
@@ -164,11 +167,12 @@ class MemberUserController(
         val member = memberLogic.get(userId)
             ?: throw NotFoundException("Member not found: $userId")
 
-        // Verify old password
-        if (member.password != null) {
+        // 已设过密码：必须带旧密码且正确；没设过（短信 / 社交注册）直接设置
+        if (!member.password.isNullOrEmpty()) {
+            if (request.oldPassword.isEmpty()) throw BadRequestException("请输入当前密码")
             val verification = PasswordHasher.verify(request.oldPassword, member.password)
             if (!verification.verified) {
-                throw BadRequestException("Old password is incorrect")
+                throw BadRequestException("当前密码不正确")
             }
         }
 

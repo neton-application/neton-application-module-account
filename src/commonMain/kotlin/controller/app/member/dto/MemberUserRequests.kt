@@ -99,9 +99,13 @@ data class UpdateMemberMobileRequest(
 
 @Serializable
 data class UpdateMemberPasswordRequest(
-    @property:NotBlank
-    @property:Size(min = 8, max = 128)
-    val oldPassword: String,
+    /**
+     * 当前密码。从没设过密码的账号（短信 / 社交登录注册）可留空 —— 以前这里是 @NotBlank + 最少 8 位，
+     * 而逻辑层对无密码账号本就跳过校验，两者打架的结果是这类用户永远设不了密码。
+     * 已有密码时是否必填、是否正确由 controller 判。不限最短长度：旧密码可能是按旧规则设的。
+     */
+    @property:Size(max = 128)
+    val oldPassword: String = "",
 
     @property:NotBlank
     @property:Size(min = 8, max = 128)
