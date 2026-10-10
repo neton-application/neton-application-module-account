@@ -18,7 +18,7 @@ import neton.database.annotations.UpdatedAt
  * reason：举报理由码，见 [enums.ReportReason]。status：0 待处理 / 1 处理中 / 2 已处理 / 3 已驳回。
  */
 @Serializable
-@Table("member_reports")
+@Table("account_reports")
 data class Report(
     @Id
     val id: Long = 0,

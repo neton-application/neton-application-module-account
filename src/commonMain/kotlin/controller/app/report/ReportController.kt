@@ -1,7 +1,7 @@
 package controller.app.report
 
 import controller.app.report.dto.SubmitReportRequest
-import logic.MemberReportLogic
+import logic.AccountReportLogic
 import neton.core.annotations.*
 import neton.core.interfaces.Identity
 
@@ -11,7 +11,7 @@ import neton.core.interfaces.Identity
  */
 @Controller("/member/report")
 class ReportController(
-    private val reportLogic: MemberReportLogic
+    private val reportLogic: AccountReportLogic
 ) {
 
     /** 提交举报，返回举报记录 id。 */

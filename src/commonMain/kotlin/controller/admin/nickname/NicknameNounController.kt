@@ -7,7 +7,7 @@ import controller.admin.nickname.dto.NicknameWordRow
 import controller.admin.nickname.dto.UpdateNicknameWordStatusRequest
 import kotlin.time.Clock
 import logic.NicknameGenerator
-import model.MemberNicknameNoun
+import model.AccountNicknameNoun
 import neton.core.annotations.Body
 import neton.core.annotations.Controller
 import neton.core.annotations.Delete
@@ -20,33 +20,33 @@ import neton.core.annotations.Put
 import neton.core.http.BadRequestException
 import neton.core.http.NotFoundException
 import neton.database.dsl.*
-import table.MemberNicknameNounTable
+import table.AccountNicknameNounTable
 
 /**
  * Admin 名词词库管理。结构跟 [NicknameAdjectiveController] 完全对称,
  * 只是 table / route 不同。
  */
-@Controller("/member/nickname-noun")
+@Controller("/account/nickname-noun")
 class NicknameNounController(
     private val nicknameGenerator: NicknameGenerator,
 ) {
 
     @Get("/page")
-    @Permission("member:nickname:query")
+    @Permission("account:nickname:query")
     suspend fun page(
         @Query page: Int = 1,
         @Query pageSize: Int = 50,
         @Query word: String? = null,
         @Query status: Int? = null,
     ): NicknameWordPageResponse {
-        val result = MemberNicknameNounTable.query {
+        val result = AccountNicknameNounTable.query {
             where {
                 and(
-                    whenNotBlank(word) { MemberNicknameNoun::word like "%$it%" },
-                    whenPresent(status) { MemberNicknameNoun::status eq it },
+                    whenNotBlank(word) { AccountNicknameNoun::word like "%$it%" },
+                    whenPresent(status) { AccountNicknameNoun::status eq it },
                 )
             }
-            orderBy(MemberNicknameNoun::id.desc())
+            orderBy(AccountNicknameNoun::id.desc())
         }.page(page, pageSize)
         return NicknameWordPageResponse(
             list = result.items.map { it.toRow() },
@@ -57,16 +57,16 @@ class NicknameNounController(
     }
 
     @Get("/export")
-    @Permission("member:nickname:query")
+    @Permission("account:nickname:query")
     suspend fun export(): List<String> {
-        return MemberNicknameNounTable.query {
-            where { MemberNicknameNoun::status eq 1 }
-            orderBy(MemberNicknameNoun::id.asc())
+        return AccountNicknameNounTable.query {
+            where { AccountNicknameNoun::status eq 1 }
+            orderBy(AccountNicknameNoun::id.asc())
         }.list().map { it.word }
     }
 
     @Post("/import")
-    @Permission("member:nickname:create")
+    @Permission("account:nickname:create")
     suspend fun import(@Body request: ImportNicknameWordsRequest): ImportNicknameWordsResponse {
         val received = request.words.size
         if (received == 0) {
@@ -79,12 +79,12 @@ class NicknameNounController(
             .toSet()
         var inserted = 0
         for (w in unique) {
-            val existed = MemberNicknameNounTable.oneWhere {
-                MemberNicknameNoun::word eq w
+            val existed = AccountNicknameNounTable.oneWhere {
+                AccountNicknameNoun::word eq w
             }
             if (existed == null) {
-                MemberNicknameNounTable.insert(
-                    MemberNicknameNoun(word = w, status = 1, createdAt = now, updatedAt = now)
+                AccountNicknameNounTable.insert(
+                    AccountNicknameNoun(word = w, status = 1, createdAt = now, updatedAt = now)
                 )
                 inserted++
             }
@@ -98,38 +98,38 @@ class NicknameNounController(
     }
 
     @Put("/{id}/status")
-    @Permission("member:nickname:update")
+    @Permission("account:nickname:update")
     suspend fun updateStatus(
         @PathVariable id: Long,
         @Body request: UpdateNicknameWordStatusRequest,
     ) {
-        val row = MemberNicknameNounTable.get(id)
+        val row = AccountNicknameNounTable.get(id)
             ?: throw NotFoundException("nickname noun id=$id not found")
         if (request.status !in 0..1) {
             throw BadRequestException("status must be 0 or 1")
         }
         val now = Clock.System.now().toEpochMilliseconds()
-        MemberNicknameNounTable.update(row.copy(status = request.status, updatedAt = now))
+        AccountNicknameNounTable.update(row.copy(status = request.status, updatedAt = now))
         nicknameGenerator.reload()
     }
 
     @Delete("/{id}")
-    @Permission("member:nickname:delete")
+    @Permission("account:nickname:delete")
     suspend fun delete(@PathVariable id: Long) {
-        val row = MemberNicknameNounTable.get(id)
+        val row = AccountNicknameNounTable.get(id)
             ?: throw NotFoundException("nickname noun id=$id not found")
-        MemberNicknameNounTable.destroy(row.id)
+        AccountNicknameNounTable.destroy(row.id)
         nicknameGenerator.reload()
     }
 
     @Post("/reload")
-    @Permission("member:nickname:update")
+    @Permission("account:nickname:update")
     suspend fun reload() {
         nicknameGenerator.reload()
     }
 }
 
-private fun MemberNicknameNoun.toRow(): NicknameWordRow = NicknameWordRow(
+private fun AccountNicknameNoun.toRow(): NicknameWordRow = NicknameWordRow(
     id = id,
     word = word,
     status = status,

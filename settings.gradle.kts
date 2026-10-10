@@ -6,7 +6,7 @@ pluginManagement {
     }
 }
 
-rootProject.name = "module-member"
+rootProject.name = "module-account"
 
 // 框架
 includeBuild("../neton")

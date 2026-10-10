@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 /**
  * Post-login Required Action（spec PLATFORM_REQUIRED_ACTIONS_CONTRACT §4.1）。
  *
- * 由 server 在 `MemberLoginResponse.requiredActions` 与
+ * 由 server 在 `AccountLoginResponse.requiredActions` 与
  * `GET /app/account/required-actions` 两处返回。Client 在数组非空时阻断
  * 进入主功能，按顺序处理每个 action；完成一个后必须重新拉权威列表。
  *

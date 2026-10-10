@@ -44,7 +44,7 @@ kotlin {
                 // com.netonframework 会让 includeBuild 的坐标替换失配，Gradle 转而去
                 // 远程仓库找一个不存在的制品；版本也交给复合构建，不硬编。
                 implementation("com.netonstream:geolite4k")
-                // MEMBER-IDENTITY-ADAPTER(M1): 去掉 privchat:client/hook —— member 脱离 privchat 直接依赖。
+                // 身份后端走 AccountIdentityAdapter 抽象，不直接依赖 privchat。
                 implementation("com.netonstream:neton-core")
                 implementation("com.netonstream:neton-routing")
                 implementation("com.netonstream:neton-security")
@@ -75,7 +75,7 @@ dependencies {
 }
 
 ksp {
-    arg("neton.moduleId", "member")
+    arg("neton.moduleId", "account")
 }
 
 // Ensure Kotlin compilation sees KSP-generated commonMain sources.
@@ -112,7 +112,7 @@ tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)"
 }
 
 // Embed SQL migration resources into binary (no runtime file IO).
-extra["neton.migration.moduleId"] = "member"
+extra["neton.migration.moduleId"] = "account"
 extra["neton.migration.dialects"] = listOf("postgresql")
 extra["neton.migration.sqlSourceDir"] = file("sql")
 apply(from = "../neton/scripts/embed-migration-resources.gradle.kts")

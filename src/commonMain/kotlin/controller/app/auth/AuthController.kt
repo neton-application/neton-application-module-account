@@ -1,12 +1,12 @@
 package controller.app.auth
 
-import logic.MemberAuthLogic
-import controller.app.auth.dto.MemberRegisterRequest
+import logic.AccountAuthLogic
+import controller.app.auth.dto.AccountRegisterRequest
 import controller.app.auth.dto.UsernameLoginRequest
 import controller.app.auth.dto.E164_MESSAGE
 import controller.app.auth.dto.E164_REGEX
-import controller.app.auth.dto.MemberLoginRequest
-import controller.app.auth.dto.MemberLoginResponse
+import controller.app.auth.dto.AccountLoginRequest
+import controller.app.auth.dto.AccountLoginResponse
 import controller.admin.auth.dto.SocialLoginRequest
 import controller.admin.auth.dto.SocialRedirectVO
 import kotlinx.serialization.Serializable
@@ -31,7 +31,7 @@ data class ValidateSmsCodeRequest(
 )
 
 @Serializable
-data class MemberRefreshTokenRequest(
+data class AccountRefreshTokenRequest(
     @property:NotBlank
     @property:Size(min = 32, max = 4096)
     val refreshToken: String,
@@ -41,7 +41,7 @@ data class MemberRefreshTokenRequest(
 
 /** 匿名场景：登录、忘记密码 */
 @Serializable
-data class MemberSendSmsCodeRequest(
+data class AccountSendSmsCodeRequest(
     @property:NotBlank
     @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
     val mobile: String,
@@ -62,28 +62,28 @@ data class ValidateSmsCodeResponse(
 
 @Controller("/auth")
 class AuthController(
-    private val memberAuthLogic: MemberAuthLogic
+    private val accountAuthLogic: AccountAuthLogic
 ) {
 
     @Post("/login")
     @AllowAnonymous
     @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Login attempts exceeded, please try again later")
-    suspend fun login(@Body request: MemberLoginRequest, httpRequest: HttpRequest): MemberLoginResponse {
-        return memberAuthLogic.login(request, httpRequest.clientIp())
+    suspend fun login(@Body request: AccountLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        return accountAuthLogic.login(request, httpRequest.clientIp())
     }
 
     /** 通用注册入口(MEMBER_INVITE_CODE §5.1):v1 = USERNAME_PASSWORD;PHONE_SMS 走 sms-login。 */
     @Post("/register")
     @AllowAnonymous
-    suspend fun register(@Body request: MemberRegisterRequest, httpRequest: HttpRequest): MemberLoginResponse {
-        return memberAuthLogic.register(request, httpRequest.clientIp())
+    suspend fun register(@Body request: AccountRegisterRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        return accountAuthLogic.register(request, httpRequest.clientIp())
     }
 
     /** 账号密码登录(USERNAME_PASSWORD 注册的用户)。 */
     @Post("/login-username")
     @AllowAnonymous
-    suspend fun loginUsername(@Body request: UsernameLoginRequest, httpRequest: HttpRequest): MemberLoginResponse {
-        return memberAuthLogic.usernameLogin(
+    suspend fun loginUsername(@Body request: UsernameLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        return accountAuthLogic.usernameLogin(
             request.username,
             request.password,
             request.device,
@@ -94,13 +94,13 @@ class AuthController(
     @Post("/sms-login")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "SMS login attempts exceeded, please try again later")
-    suspend fun smsLogin(@Body request: MemberLoginRequest, httpRequest: HttpRequest): MemberLoginResponse {
-        return memberAuthLogic.smsLogin(request, httpRequest.clientIp())
+    suspend fun smsLogin(@Body request: AccountLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        return accountAuthLogic.smsLogin(request, httpRequest.clientIp())
     }
 
     @Post("/logout")
     suspend fun logout(identity: neton.core.interfaces.Identity) {
-        memberAuthLogic.logout(identity.id.toLong())
+        accountAuthLogic.logout(identity.id.toLong())
     }
 
     /**
@@ -111,13 +111,13 @@ class AuthController(
      */
     @Post("/delete-account")
     suspend fun deleteAccount(identity: neton.core.interfaces.Identity) {
-        memberAuthLogic.deleteOwnAccount(identity.id.toLong())
+        accountAuthLogic.deleteOwnAccount(identity.id.toLong())
     }
 
     @Post("/refresh-token")
     @AllowAnonymous
-    suspend fun refreshToken(@Body request: MemberRefreshTokenRequest): MemberLoginResponse {
-        return memberAuthLogic.refreshToken(request.refreshToken, request.deviceId)
+    suspend fun refreshToken(@Body request: AccountRefreshTokenRequest): AccountLoginResponse {
+        return accountAuthLogic.refreshToken(request.refreshToken, request.deviceId)
     }
 
     /**
@@ -127,7 +127,7 @@ class AuthController(
     @Post("/send-sms-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "SMS code sending limit exceeded, please try again later")
-    suspend fun sendSmsCode(@Body request: MemberSendSmsCodeRequest) {
+    suspend fun sendSmsCode(@Body request: AccountSendSmsCodeRequest) {
         val scene = try {
             SmsScene.fromScene(request.scene)
         } catch (_: IllegalArgumentException) {
@@ -136,45 +136,45 @@ class AuthController(
         if (scene !in ANON_SCENES) {
             throw BadRequestException("Scene ${request.scene} requires authentication, use /member/user/send-sms-code")
         }
-        memberAuthLogic.sendSmsCode(request.mobile, scene)
+        accountAuthLogic.sendSmsCode(request.mobile, scene)
     }
 
     /** 邮箱验证码（匿名只开放找回密码场景）。 */
     @Post("/send-email-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Email code sending limit exceeded, please try again later")
-    suspend fun sendEmailCode(@Body request: controller.app.member.dto.SendEmailCodeRequest) {
+    suspend fun sendEmailCode(@Body request: controller.app.account.dto.SendEmailCodeRequest) {
         if (request.scene != "reset_password") throw BadRequestException("Scene ${request.scene} requires authentication, use /member/user/send-email-code")
-        memberAuthLogic.sendEmailCode(request.email, "reset_password")
+        accountAuthLogic.sendEmailCode(request.email, "reset_password")
     }
 
     @Put("/reset-password-by-email")
     @AllowAnonymous
     @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
-    suspend fun resetPasswordByEmail(@Body request: controller.app.member.dto.ResetPasswordByEmailRequest) {
-        memberAuthLogic.resetPasswordByEmail(request.email, request.code, request.newPassword)
+    suspend fun resetPasswordByEmail(@Body request: controller.app.account.dto.ResetPasswordByEmailRequest) {
+        accountAuthLogic.resetPasswordByEmail(request.email, request.code, request.newPassword)
     }
 
     @Post("/validate-sms-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Too many verification attempts, please try again later")
     suspend fun validateSmsCode(@Body request: ValidateSmsCodeRequest): ValidateSmsCodeResponse {
-        val valid = memberAuthLogic.validateSmsCode(request.mobile, request.code)
+        val valid = accountAuthLogic.validateSmsCode(request.mobile, request.code)
         return ValidateSmsCodeResponse(valid = valid)
     }
 
     @Get("/social-auth-redirect")
     @AllowAnonymous
     suspend fun socialAuthRedirect(@Query type: String, @Query redirectUri: String? = null): SocialRedirectVO {
-        val url = memberAuthLogic.socialAuthRedirect(type, redirectUri ?: "")
+        val url = accountAuthLogic.socialAuthRedirect(type, redirectUri ?: "")
         return SocialRedirectVO(url = url)
     }
 
     @Post("/social-login")
     @AllowAnonymous
     @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Social login attempts exceeded, please try again later")
-    suspend fun socialLogin(@Body request: SocialLoginRequest, httpRequest: HttpRequest): MemberLoginResponse {
-        return memberAuthLogic.socialLogin(
+    suspend fun socialLogin(@Body request: SocialLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        return accountAuthLogic.socialLogin(
             socialType = request.socialType,
             code = request.code,
             redirectUri = request.redirectUri ?: "",

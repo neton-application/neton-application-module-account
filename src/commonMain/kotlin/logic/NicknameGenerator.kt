@@ -4,18 +4,18 @@ import kotlin.concurrent.Volatile
 import kotlin.random.Random
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import model.MemberNicknameAdjective
-import model.MemberNicknameNoun
+import model.AccountNicknameAdjective
+import model.AccountNicknameNoun
 import neton.database.dsl.*
 import neton.logging.Logger
-import table.MemberNicknameAdjectiveTable
-import table.MemberNicknameNounTable
+import table.AccountNicknameAdjectiveTable
+import table.AccountNicknameNounTable
 
 /**
  * 自动昵称生成器 —— 服务客户端「填昵称引导页」prefill 默认值。
  *
  * **生成规则**: `形容词 + 名词`,e.g. `"勇敢的狮子"`
- * - 形容词/名词独立两张表 (`member_nickname_adjective` / `member_nickname_noun`)
+ * - 形容词/名词独立两张表 (`account_nickname_adjective` / `account_nickname_noun`)
  * - 撞库概率 = 1 / (形容词数 × 名词数), 词库够大时业务可接受 (不做唯一性约束)
  * - 词库未初始化 / 单边空 → 返 `null`,caller 自行兜底
  *
@@ -26,7 +26,7 @@ import table.MemberNicknameNounTable
  * **并发**: [reload] / [next] 走 [Mutex] 串行化,避免读写竞争(K/N 多 worker
  * 路径下尤其重要)。reload 频率低 (admin 手动操作),次数级影响忽略。
  */
-@neton.core.annotations.Logic(logger = "logic.member-nickname")
+@neton.core.annotations.Logic(logger = "logic.account-nickname")
 class NicknameGenerator(
     private val log: Logger,
 ) {
@@ -43,11 +43,11 @@ class NicknameGenerator(
      *    显式刷新
      */
     suspend fun reload() {
-        val adjs = MemberNicknameAdjectiveTable.query {
-            where { MemberNicknameAdjective::status eq 1 }
+        val adjs = AccountNicknameAdjectiveTable.query {
+            where { AccountNicknameAdjective::status eq 1 }
         }.list().map { it.word }
-        val ns = MemberNicknameNounTable.query {
-            where { MemberNicknameNoun::status eq 1 }
+        val ns = AccountNicknameNounTable.query {
+            where { AccountNicknameNoun::status eq 1 }
         }.list().map { it.word }
         mutex.withLock {
             adjectives = adjs
