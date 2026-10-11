@@ -9,17 +9,17 @@ import neton.validation.annotations.Size
 
 // ──────────── 拆分端点（spec MODULE_MEMBER_PROFILE_SPEC §4） ────────────
 //
-// 旧的 UpdateMemberProfileRequest 混改 nickname + avatar 已下线；按操作单一职责拆开。
+// 旧的 UpdateProfileRequest 混改 nickname + avatar 已下线；按操作单一职责拆开。
 
 @Serializable
-data class UpdateMemberNicknameRequest(
+data class UpdateNicknameRequest(
     @property:NotBlank
     @property:Size(min = 2, max = 32)
     val nickname: String,
 )
 
 @Serializable
-data class UpdateMemberAvatarRequest(
+data class UpdateAvatarRequest(
     /** application 唯一用户态上传入口（POST /app/infra/file/upload）返回的 fileId。 */
     @property:NotBlank
     @property:Size(min = 1, max = 64)
@@ -27,34 +27,34 @@ data class UpdateMemberAvatarRequest(
 )
 
 @Serializable
-data class UpdateMemberUsernameRequest(
+data class UpdateUsernameRequest(
     @property:NotBlank
     @property:Size(min = 3, max = 32)
     val username: String,
 )
 
 @Serializable
-data class UpdateMemberUsernameResponse(
+data class UpdateUsernameResponse(
     val username: String,
     /** 下次允许改 username 的时间戳（millis）。客户端可用来灰显按钮。 */
     val nextChangeAvailableAt: Long,
 )
 
 @Serializable
-data class UpdateMemberBioRequest(
+data class UpdateBioRequest(
     /** null 或空串视作清空；非 null 时长度 ≤ 200。 */
     @property:Size(max = 200)
     val bio: String? = null,
 )
 
 @Serializable
-data class UpdateMemberGenderRequest(
+data class UpdateGenderRequest(
     /** 仅 0 / 1 / 2 / 9 合法（详 §4.6） */
     val gender: Int,
 )
 
 @Serializable
-data class UpdateMemberBirthdayRequest(
+data class UpdateBirthdayRequest(
     /** ISO `YYYY-MM-DD`；null 或空串视作清空。 */
     val birthday: String? = null,
 )
@@ -87,7 +87,7 @@ data class ResetPasswordByEmailRequest(
 )
 
 @Serializable
-data class UpdateMemberMobileRequest(
+data class UpdateMobileRequest(
     @property:NotBlank
     @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
     val mobile: String,
@@ -98,7 +98,7 @@ data class UpdateMemberMobileRequest(
 )
 
 @Serializable
-data class UpdateMemberPasswordRequest(
+data class UpdatePasswordRequest(
     /**
      * 当前密码。从没设过密码的账号（短信 / 社交登录注册）可留空 —— 以前这里是 @NotBlank + 最少 8 位，
      * 而逻辑层对无密码账号本就跳过校验，两者打架的结果是这类用户永远设不了密码。
@@ -113,7 +113,7 @@ data class UpdateMemberPasswordRequest(
 )
 
 @Serializable
-data class ResetMemberPasswordRequest(
+data class ResetPasswordBySmsRequest(
     @property:NotBlank
     @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
     val mobile: String,

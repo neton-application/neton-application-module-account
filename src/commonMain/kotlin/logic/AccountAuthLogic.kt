@@ -41,6 +41,9 @@ class AccountAuthLogic(
 
     companion object {
         private const val SMS_CODE_PREFIX = "sms:code:"
+        private const val SMS_CODE_FAILS_SUFFIX = ":fails"
+        /** 同一条验证码最多猜错几次。到了就作废，必须重新发码 —— 6 位码靠 IP 限流挡不住换 IP 的穷举。 */
+        private const val SMS_CODE_MAX_FAILS = 5
         private val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
         private const val SMS_CODE_TTL_SECONDS = 300L  // 5 minutes
         private const val DEFAULT_PLATFORM = "unknown"
@@ -214,22 +217,24 @@ class AccountAuthLogic(
         val mobile = requireE164(rawMobile)
         // Scene-specific pre-validation
         when (scene) {
-            SmsScene.MEMBER_UPDATE_MOBILE -> {
+            SmsScene.UPDATE_MOBILE -> {
                 // 修改手机：新手机号不能已被其他用户使用
                 val existing = AccountTable.oneWhere { Account::mobile eq mobile }
                 if (existing != null) {
                     throw BadRequestException("Mobile number is already in use")
                 }
             }
-            SmsScene.MEMBER_RESET_PASSWORD,
-            SmsScene.MEMBER_UPDATE_PASSWORD -> {
+            SmsScene.RESET_PASSWORD,
+            SmsScene.UPDATE_PASSWORD -> {
                 // 重置/修改密码：手机号必须已注册
                 AccountTable.oneWhere { Account::mobile eq mobile }
                     ?: throw BadRequestException("Mobile number is not registered")
             }
-            SmsScene.MEMBER_LOGIN -> Unit // 登录：无需前置校验，允许自动注册
+            SmsScene.LOGIN -> Unit // 登录：无需前置校验，允许自动注册
         }
 
+        // 新码配新的错误计数：上一条码猜错的次数不能带到这一条上。
+        redis?.delete("$SMS_CODE_PREFIX$mobile$SMS_CODE_FAILS_SUFFIX")
         if (messageSendLogic != null) {
             messageSendLogic.sendVerificationCode(mobile, scene.templateCode)
         } else {
@@ -280,6 +285,37 @@ class AccountAuthLogic(
         if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
         val member = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
         AccountTable.update(member.copy(email = email))
+    }
+
+    /**
+     * 绑定或换绑手机号（没绑过就是绑定，绑过就是换绑）。
+     *
+     * 证明的是「新号码归本人」：验证码发到新号码上。旧号码不再验证 —— 换绑往往正是因为旧号
+     * 已经收不到短信；本人身份由入口的 @FreshAuth（近期重新验证过身份）保证。
+     */
+    suspend fun changeMobile(userId: Long, rawMobile: String, code: String) {
+        val mobile = requireE164(rawMobile)
+        verifySmsCode(mobile, code)
+        val account = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
+        if (account.mobile == mobile) return
+        // 发码时查过一次占用，这里再查一次：两次之间号码可能被别人绑走。不查的话撞上唯一索引，
+        // 用户看到的是一条数据库异常。
+        val holder = AccountTable.oneWhere { Account::mobile eq mobile }
+        if (holder != null && holder.id != userId) throw BadRequestException("Mobile number is already in use")
+        AccountTable.update(account.copy(mobile = mobile))
+        identityAdapter.onMobileChanged(
+            port.AccountMobileChangedEvent(memberId = userId, newMobile = mobile, oldMobile = account.mobile),
+        )
+    }
+
+    /** 忘记密码：凭发到绑定手机号上的验证码重设。 */
+    suspend fun resetPasswordBySms(rawMobile: String, code: String, newPassword: String) {
+        val mobile = requireE164(rawMobile)
+        verifySmsCode(mobile, code)
+        val account = AccountTable.oneWhere { Account::mobile eq mobile }
+            ?: throw NotFoundException("Account not found with mobile: $mobile")
+        AccountTable.update(account.copy(password = PasswordHasher.hash(newPassword)))
+        identityAdapter.onPasswordChanged(port.AccountPasswordChangedEvent(memberId = account.id))
     }
 
     suspend fun resetPasswordByEmail(rawEmail: String, code: String, newPassword: String) {
@@ -366,22 +402,34 @@ class AccountAuthLogic(
     private suspend fun verifySmsCode(mobile: String, code: String) {
         val redisInstance = redis ?: throw BadRequestException("SMS code service unavailable")
         val key = "$SMS_CODE_PREFIX$mobile"
+        val failsKey = "$key$SMS_CODE_FAILS_SUFFIX"
 
-        // Atomically verify and consume the SMS code via Lua script to prevent TOCTOU.
-        // Returns: 0 = key not found, 1 = wrong code, 2 = matched and deleted.
+        // 校验、消费、记错一次性在 Lua 里完成，避免 TOCTOU。
+        // 返回：0 = 没有码，1 = 码不对，2 = 对上并已消费，3 = 猜错次数到上限、码已作废。
         val script = """
             local val = redis.call('GET', KEYS[1])
             if val == false then return 0 end
             if val == ARGV[1] then
-                redis.call('DEL', KEYS[1])
+                redis.call('DEL', KEYS[1], KEYS[2])
                 return 2
+            end
+            local fails = redis.call('INCR', KEYS[2])
+            if fails == 1 then redis.call('EXPIRE', KEYS[2], ARGV[2]) end
+            if fails >= tonumber(ARGV[3]) then
+                redis.call('DEL', KEYS[1], KEYS[2])
+                return 3
             end
             return 1
         """.trimIndent()
 
-        when (redisInstance.evalToLong(script, listOf(key), listOf(code))) {
+        when (redisInstance.evalToLong(
+            script,
+            listOf(key, failsKey),
+            listOf(code, SMS_CODE_TTL_SECONDS.toString(), SMS_CODE_MAX_FAILS.toString()),
+        )) {
             0L -> throw BadRequestException("SMS code expired or not sent")
             1L -> throw BadRequestException("Invalid SMS code")
+            3L -> throw BadRequestException("Too many wrong attempts, please request a new code")
             // 2L = matched and consumed; fall through
         }
     }

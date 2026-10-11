@@ -51,9 +51,9 @@ data class AccountSendSmsCodeRequest(
 )
 
 /** 认证场景的合法 scene 值集合（修改手机、修改密码） */
-private val AUTHED_SCENES = setOf(SmsScene.MEMBER_UPDATE_MOBILE, SmsScene.MEMBER_UPDATE_PASSWORD)
+private val AUTHED_SCENES = setOf(SmsScene.UPDATE_MOBILE, SmsScene.UPDATE_PASSWORD)
 /** 匿名场景的合法 scene 值集合（登录、忘记密码） */
-private val ANON_SCENES = setOf(SmsScene.MEMBER_LOGIN, SmsScene.MEMBER_RESET_PASSWORD)
+private val ANON_SCENES = setOf(SmsScene.LOGIN, SmsScene.RESET_PASSWORD)
 
 @Serializable
 data class ValidateSmsCodeResponse(

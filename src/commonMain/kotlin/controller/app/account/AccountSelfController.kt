@@ -4,35 +4,30 @@ import controller.app.account.dto.AccountSelfVO
 import controller.app.account.dto.toSelfVO
 
 import port.AccountIdentityAdapter
-import port.AccountMobileChangedEvent
 import port.AccountPasswordChangedEvent
-import controller.app.account.dto.ResetMemberPasswordRequest
-import controller.app.account.dto.UpdateMemberAvatarRequest
-import controller.app.account.dto.UpdateMemberBioRequest
-import controller.app.account.dto.UpdateMemberBirthdayRequest
-import controller.app.account.dto.UpdateMemberGenderRequest
-import controller.app.account.dto.UpdateMemberMobileRequest
+import controller.app.account.dto.ResetPasswordBySmsRequest
+import controller.app.account.dto.UpdateAvatarRequest
+import controller.app.account.dto.UpdateBioRequest
+import controller.app.account.dto.UpdateBirthdayRequest
+import controller.app.account.dto.UpdateGenderRequest
+import controller.app.account.dto.UpdateMobileRequest
 import controller.app.account.dto.SendEmailCodeRequest
 import controller.app.account.dto.BindEmailRequest
-import controller.app.account.dto.UpdateMemberNicknameRequest
-import controller.app.account.dto.UpdateMemberPasswordRequest
-import controller.app.account.dto.UpdateMemberUsernameRequest
-import controller.app.account.dto.UpdateMemberUsernameResponse
+import controller.app.account.dto.UpdateNicknameRequest
+import controller.app.account.dto.UpdatePasswordRequest
+import controller.app.account.dto.UpdateUsernameRequest
+import controller.app.account.dto.UpdateUsernameResponse
 import enums.SmsScene
 import kotlinx.serialization.Serializable
 import logic.AccountAuthLogic
 import logic.AccountLogic
 import logic.AccountProfileLogic
-import model.Account
 import neton.core.annotations.*
 import neton.core.http.BadRequestException
 import neton.core.http.NotFoundException
 import neton.core.interfaces.Identity
-import neton.database.dsl.*
-import neton.redis.RedisClient
 import neton.security.password.PasswordHasher
 import neton.validation.annotations.Min
-import table.AccountTable
 
 @Serializable
 data class AuthedSendSmsCodeRequest(
@@ -55,7 +50,6 @@ class AccountSelfController(
     private val accountLogic: AccountLogic,
     private val accountAuthLogic: AccountAuthLogic,
     private val accountProfileLogic: AccountProfileLogic,
-    private val redis: RedisClient? = null,
     // MEMBER-IDENTITY-ADAPTER: mobile/password 变更回调走 adapter(builtin=空;privchat adapter 同步)。
     private val identityAdapter: AccountIdentityAdapter? = null,
 ) {
@@ -71,7 +65,7 @@ class AccountSelfController(
     @Put("/update-nickname")
     suspend fun updateNickname(
         identity: Identity,
-        @Body request: UpdateMemberNicknameRequest,
+        @Body request: UpdateNicknameRequest,
     ) {
         accountProfileLogic.updateNickname(identity.id.toLong(), request.nickname)
     }
@@ -79,17 +73,17 @@ class AccountSelfController(
     @Put("/update-avatar")
     suspend fun updateAvatar(
         identity: Identity,
-        @Body request: UpdateMemberAvatarRequest,
+        @Body request: UpdateAvatarRequest,
     ): AccountSelfVO = accountProfileLogic.updateAvatar(identity.id.toLong(), request.fileId).toSelfVO()
 
     @Put("/update-username")
     @FreshAuth
     suspend fun updateUsername(
         identity: Identity,
-        @Body request: UpdateMemberUsernameRequest,
-    ): UpdateMemberUsernameResponse {
+        @Body request: UpdateUsernameRequest,
+    ): UpdateUsernameResponse {
         val result = accountProfileLogic.updateUsername(identity.id.toLong(), request.username)
-        return UpdateMemberUsernameResponse(
+        return UpdateUsernameResponse(
             username = result.member.username
                 ?: error("updateUsername returned member without username; logic invariant broken"),
             nextChangeAvailableAt = result.nextChangeAvailableAt,
@@ -99,7 +93,7 @@ class AccountSelfController(
     @Put("/update-bio")
     suspend fun updateBio(
         identity: Identity,
-        @Body request: UpdateMemberBioRequest,
+        @Body request: UpdateBioRequest,
     ) {
         accountProfileLogic.updateBio(identity.id.toLong(), request.bio)
     }
@@ -107,7 +101,7 @@ class AccountSelfController(
     @Put("/update-gender")
     suspend fun updateGender(
         identity: Identity,
-        @Body request: UpdateMemberGenderRequest,
+        @Body request: UpdateGenderRequest,
     ) {
         accountProfileLogic.updateGender(identity.id.toLong(), request.gender)
     }
@@ -115,36 +109,19 @@ class AccountSelfController(
     @Put("/update-birthday")
     suspend fun updateBirthday(
         identity: Identity,
-        @Body request: UpdateMemberBirthdayRequest,
+        @Body request: UpdateBirthdayRequest,
     ) {
         accountProfileLogic.updateBirthday(identity.id.toLong(), request.birthday)
     }
 
     // ──────────── mobile / password / SMS（spec §4.8 已有，行为不变） ────────────
 
+    /** 绑定 / 换绑手机号：先用 scene=2 往新号码发码，再带码提交。 */
     @Put("/update-mobile")
     @FreshAuth
-    suspend fun updateMobile(identity: Identity, @Body request: UpdateMemberMobileRequest) {
-        val userId = identity.id.toLong()
-        val mobile = request.mobile
-        val smsCode = request.smsCode
-        // Verify SMS code
-        val storedCode = redis?.getValue("sms:code:$mobile")
-        if (storedCode == null) {
-            throw BadRequestException("SMS code expired or not sent")
-        }
-        if (storedCode != smsCode) {
-            throw BadRequestException("Invalid SMS code")
-        }
-        redis.delete("sms:code:$mobile")
-
-        val member = accountLogic.get(userId)
-            ?: throw NotFoundException("Account not found: $userId")
-        val oldMobile = member.mobile
-        accountLogic.update(member.copy(mobile = mobile))
-        identityAdapter?.onMobileChanged(
-            AccountMobileChangedEvent(memberId = userId, newMobile = mobile, oldMobile = oldMobile),
-        )
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = "Too many attempts, please try again later")
+    suspend fun updateMobile(identity: Identity, @Body request: UpdateMobileRequest) {
+        accountAuthLogic.changeMobile(identity.id.toLong(), request.mobile, request.smsCode)
     }
 
     /** 绑定邮箱：先发码（登录态），再带码绑定。 */
@@ -154,15 +131,17 @@ class AccountSelfController(
         accountAuthLogic.sendEmailCode(request.email, "bind_email", identity.id.toLong())
     }
 
+    /** 绑定 / 换绑邮箱：先发码到新邮箱，再带码提交。 */
     @Put("/bind-email")
     @FreshAuth
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = "Too many attempts, please try again later")
     suspend fun bindEmail(identity: Identity, @Body request: BindEmailRequest) {
         accountAuthLogic.bindEmail(identity.id.toLong(), request.email, request.code)
     }
 
     @Put("/update-password")
     @FreshAuth
-    suspend fun updatePassword(identity: Identity, @Body request: UpdateMemberPasswordRequest) {
+    suspend fun updatePassword(identity: Identity, @Body request: UpdatePasswordRequest) {
         val userId = identity.id.toLong()
         val member = accountLogic.get(userId)
             ?: throw NotFoundException("Account not found: $userId")
@@ -182,26 +161,9 @@ class AccountSelfController(
     }
 
     @Put("/reset-password")
-    suspend fun resetPassword(@Body request: ResetMemberPasswordRequest) {
-        val mobile = request.mobile
-        val smsCode = request.smsCode
-        // Verify SMS code
-        val storedCode = redis?.getValue("sms:code:$mobile")
-        if (storedCode == null) {
-            throw BadRequestException("SMS code expired or not sent")
-        }
-        if (storedCode != smsCode) {
-            throw BadRequestException("Invalid SMS code")
-        }
-        redis.delete("sms:code:$mobile")
-
-        val member = AccountTable.oneWhere {
-            Account::mobile eq mobile
-        } ?: throw NotFoundException("Account not found with mobile: $mobile")
-
-        // Hash new password and update
-        accountLogic.update(member.copy(password = PasswordHasher.hash(request.newPassword)))
-        identityAdapter?.onPasswordChanged(AccountPasswordChangedEvent(memberId = member.id))
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
+    suspend fun resetPassword(@Body request: ResetPasswordBySmsRequest) {
+        accountAuthLogic.resetPasswordBySms(request.mobile, request.smsCode, request.newPassword)
     }
 
     /**
@@ -218,19 +180,19 @@ class AccountSelfController(
         } catch (_: IllegalArgumentException) {
             throw BadRequestException("Invalid scene: ${request.scene}")
         }
-        if (scene !in setOf(SmsScene.MEMBER_UPDATE_MOBILE, SmsScene.MEMBER_UPDATE_PASSWORD)) {
+        if (scene !in setOf(SmsScene.UPDATE_MOBILE, SmsScene.UPDATE_PASSWORD)) {
             throw BadRequestException("Scene ${request.scene} is not allowed here, use /auth/send-sms-code for login/reset-password")
         }
 
         val userId = identity.id.toLong()
 
         val mobile = when (scene) {
-            SmsScene.MEMBER_UPDATE_PASSWORD -> {
+            SmsScene.UPDATE_PASSWORD -> {
                 // 修改密码：手机号来自登录用户自己的档案，忽略请求中的 mobile
                 accountLogic.get(userId)?.mobile
                     ?: throw BadRequestException("No mobile bound to current account")
             }
-            SmsScene.MEMBER_UPDATE_MOBILE -> {
+            SmsScene.UPDATE_MOBILE -> {
                 // 修改手机：手机号为新号，由请求提供（必须 E.164）
                 request.mobile?.takeIf { it.matches(Regex(controller.app.auth.dto.E164_REGEX)) }
                     ?: throw BadRequestException(controller.app.auth.dto.E164_MESSAGE)
