@@ -1,6 +1,9 @@
 package impl
 
 import model.Account
+import model.AccountStatus
+import security.SessionRevocation
+import security.TokenRealm
 import table.AccountTable
 import port.CreateMemberAccountCommand
 import port.IssueMemberTokenCommand
@@ -29,14 +32,16 @@ import kotlin.time.ExperimentalTime
  *   `account_users_id_seq` 的下一个值（普通自增主键，JS 安全的小整数）。
  * - token：复用应用的 [JwtAuthenticator]（HS256 + security.jwt.secretKey），与 admin token
  *   同一套签验，`/app` 路由组直接验通，`Identity.id = sub`。
- * - 会话：token 携带 `sid`(session_version)/`did`(device)；改密 bump session_version。
- *   v1 仅签发携带 + 刷新处校验；接口访问强校验（登出全端即时失效）留 v2 的 member_sessions guard。
+ * - 域：token 带 `realm=account`，只能用在账号域的路由组；管理员域不收（见 system 的 TokenRealm）。
+ * - 会话：token 携带 `sid`(session_version)/`did`(device)。刷新和每次访问都校验账号状态与
+ *   会话版本，改密、注销、全端退出 bump session_version 后，已签发的 access/refresh 立即失效。
  *
  * privchat 模式由 PrivchatMemberIdentityAdapter override（走 privchat-server）。
  */
 class BuiltinAccountIdentityAdapter(
     private val jwt: JwtAuthenticator,
     private val db: DbContext,
+    private val revocation: SessionRevocation = SessionRevocation(null),
 ) : AccountIdentityAdapter {
 
     companion object {
@@ -59,6 +64,9 @@ class BuiltinAccountIdentityAdapter(
         const val REFRESH_TTL_SECONDS = 31536000L     // 365d
         private val SCOPE = listOf("user")
         private const val ISSUER = "yese-builtin"
+
+        /** 账号域的 realm 值，见 [security.AccountTokenRealm]。 */
+        const val REALM = "account"
     }
 
     override suspend fun createOrBindAccount(command: CreateMemberAccountCommand): AccountRef {
@@ -100,7 +108,7 @@ class BuiltinAccountIdentityAdapter(
             }
         }
 
-        return buildBundle(command.memberId, deviceId, sessionVersion, deviceCreated = command.deviceId.isNullOrBlank())
+        return buildBundle(command.memberId, deviceId, sessionVersion, deviceCreated = command.deviceId.isNullOrBlank(), sessionId = SessionRevocation.newId())
     }
 
     /**
@@ -117,18 +125,58 @@ class BuiltinAccountIdentityAdapter(
         } catch (e: Exception) {
             throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN")
         }
-        if (verified.claimString("type") != "refresh") {
+        // 管理员令牌和本域令牌用同一把密钥签，域不对就不是给这里用的（评审 R01）。
+        if (verified.claimString(TokenRealm.CLAIM) != REALM) {
+            throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN")
+        }
+        if (verified.claimString(TokenRealm.TYPE_CLAIM) != TokenRealm.TYPE_REFRESH) {
             throw HttpException(NetonErrorCode.INVALID_TOKEN, "NOT_A_REFRESH_TOKEN")
         }
         val memberId = verified.claimString("sub")?.toLongOrNull()
             ?: throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN_SUBJECT")
-        val sessionVersion = AccountTable.get(memberId)?.sessionVersion ?: 0L
-        val tokenSid = verified.claimString("sid")?.toLongOrNull() ?: 0L
-        if (tokenSid != sessionVersion) {
+        val account = AccountTable.get(memberId)
+        val tokenSid = verified.claimString("sid")?.toLongOrNull()
+        // 被禁用、已注销的账号同样不能续期：缺这一条时，禁用只挡住了登录，已登录的人照样续命一年。
+        if (account == null || account.status != AccountStatus.NORMAL || tokenSid != account.sessionVersion) {
             throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
         }
+        val sessionVersion = account.sessionVersion
+        val sessionId = verified.claimString(SessionRevocation.SESSION_CLAIM)
+            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
+        if (revocation.isRevoked(REALM, sessionId)) {
+            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, "REFRESH_TOKEN_REVOKED")
+        }
+        // 刷新令牌只能换一次：并发窗口外的重复使用说明它被复制了，整个会话作废（评审 R04）。
+        val jti = verified.claimString(SessionRevocation.TOKEN_ID_CLAIM)
+            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
+        val nowSeconds = Clock.System.now().toEpochMilliseconds() / 1000
+        if (revocation.claimRefresh(REALM, jti, REFRESH_TTL_SECONDS, nowSeconds) == SessionRevocation.RefreshUse.REUSED) {
+            revocation.revokeSession(REALM, sessionId, REFRESH_TTL_SECONDS)
+            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, "REFRESH_TOKEN_REVOKED")
+        }
         val deviceId = command.deviceId?.takeIf { it.isNotBlank() } ?: mintDeviceId()
-        return buildBundle(memberId, deviceId, sessionVersion, deviceCreated = false)
+        return buildBundle(memberId, deviceId, sessionVersion, deviceCreated = false, sessionId = sessionId)
+    }
+
+    override suspend fun acceptsAccessToken(memberId: Long, sessionVersion: Long, sessionId: String?): Boolean {
+        val account = AccountTable.get(memberId) ?: return false
+        if (account.status != AccountStatus.NORMAL || account.sessionVersion != sessionVersion) return false
+        return sessionId == null || !revocation.isRevoked(REALM, sessionId)
+    }
+
+    /** 只吊销这一次登录；没有 Redis 无法按会话吊销时，退回到作废全部会话。 */
+    override suspend fun logoutSession(memberId: Long, sessionId: String?, deviceId: String?) {
+        if (sessionId != null && revocation.available) {
+            revocation.revokeSession(REALM, sessionId, REFRESH_TTL_SECONDS)
+        } else {
+            revokeAllSessions(memberId, reason = "logout")
+        }
+    }
+
+    /** 内置后端的会话就是 session_version：bump 一次，所有已签发的令牌立即失效。 */
+    override suspend fun revokeAllSessions(memberId: Long, reason: String) {
+        AccountTable.query { where { Account::id eq memberId } }
+            .update { increment(Account::sessionVersion) }
     }
 
     override suspend fun onPasswordChanged(event: AccountPasswordChangedEvent) {
@@ -138,16 +186,24 @@ class BuiltinAccountIdentityAdapter(
     }
 
     private fun buildBundle(
-        memberId: Long, deviceId: String, sessionVersion: Long, deviceCreated: Boolean,
+        memberId: Long, deviceId: String, sessionVersion: Long, deviceCreated: Boolean, sessionId: String,
     ): AccountTokenBundle {
         val uid = UserId(memberId.toULong())
         val access = jwt.createToken(
             userId = uid, expiresInSeconds = ACCESS_TTL_SECONDS,
-            extraClaims = mapOf("type" to "access", "sid" to sessionVersion, "did" to deviceId, "scope" to "user"),
+            extraClaims = mapOf(
+                TokenRealm.CLAIM to REALM, TokenRealm.TYPE_CLAIM to TokenRealm.TYPE_ACCESS,
+                SessionRevocation.SESSION_CLAIM to sessionId, SessionRevocation.TOKEN_ID_CLAIM to SessionRevocation.newId(),
+                "sid" to sessionVersion, "did" to deviceId, "scope" to "user",
+            ),
         )
         val refresh = jwt.createToken(
             userId = uid, expiresInSeconds = REFRESH_TTL_SECONDS,
-            extraClaims = mapOf("type" to "refresh", "sid" to sessionVersion, "did" to deviceId),
+            extraClaims = mapOf(
+                TokenRealm.CLAIM to REALM, TokenRealm.TYPE_CLAIM to TokenRealm.TYPE_REFRESH,
+                SessionRevocation.SESSION_CLAIM to sessionId, SessionRevocation.TOKEN_ID_CLAIM to SessionRevocation.newId(),
+                "sid" to sessionVersion, "did" to deviceId,
+            ),
         )
         return AccountTokenBundle(
             userId = memberId, accessToken = access, refreshToken = refresh,

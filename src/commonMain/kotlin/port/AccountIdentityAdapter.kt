@@ -41,6 +41,24 @@ interface AccountIdentityAdapter {
      */
     suspend fun revokeAllSessions(memberId: Long, reason: String) {}
 
+    /**
+     * 本应用签发的账号访问令牌（HS256、realm=account）在每次请求时的会话校验：账号仍可用、
+     * 令牌里的会话版本仍是当前版本。改密、注销、全端退出靠 bump 版本号即时作废已签发的令牌。
+     *
+     * 默认 false：只有自己签发这类令牌的后端（内置适配器）才接受它。外部身份后端（如 privchat）
+     * 的令牌由它们自己的验证器和会话体系负责，本应用不会签出 realm=account 的令牌给它们的用户。
+     */
+    suspend fun acceptsAccessToken(memberId: Long, sessionVersion: Long, sessionId: String?): Boolean = false
+
+    /**
+     * 退出当前会话（评审 R04）：只让这一次登录失效，其他设备不受影响。
+     * [sessionId] 是本应用令牌的 `ssn`，[deviceId] 是外部令牌（如 PrivChat 统一令牌）的设备。
+     * 默认实现无法定位单个会话，只能作废该账号全部会话 —— 宁可多踢，不能退出了令牌还能用。
+     */
+    suspend fun logoutSession(memberId: Long, sessionId: String?, deviceId: String?) {
+        revokeAllSessions(memberId, reason = "logout")
+    }
+
     /** 资料变更后回调(默认空:builtin 无外部同步)。 */
     suspend fun onProfileChanged(event: AccountProfileChangedEvent) {}
     suspend fun onMobileChanged(event: AccountMobileChangedEvent) {}

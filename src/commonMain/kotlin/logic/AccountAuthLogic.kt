@@ -19,7 +19,6 @@ import neton.database.dsl.*
 import neton.logging.Logger
 import neton.core.http.BadRequestException
 import neton.core.http.NotFoundException
-import neton.redis.RedisClient
 import neton.security.password.PasswordHasher
 import kotlin.random.Random
 import kotlin.time.Duration.Companion.seconds
@@ -30,27 +29,26 @@ class AccountAuthLogic(
     private val db: neton.database.api.DbContext,
     private val identityAdapter: AccountIdentityAdapter,
     private val requiredActionsLogic: RequiredActionsLogic,
-    private val redis: RedisClient? = null,
-    private val messageSendLogic: MessageSendLogic? = null,
+    private val verificationCodes: logic.VerificationCodeService? = null,
     private val socialUserLogic: SocialUserLogic? = null,
     private val authPolicy: port.AccountAuthPolicy = port.AccountAuthPolicy(),
     /** 其他模块登记的注册扩展（如 member 的邀请码绑定、欢迎语）。 */
     private val extensions: port.AccountExtensions = port.AccountExtensions(),
     private val loginDeviceLogic: AccountLoginDeviceLogic? = null,
+    private val throttle: security.LoginThrottle = security.LoginThrottle(null),
 ) {
 
+    /** 账号不存在时用它做一次等价的哈希校验，让失败耗时与真实账号一致。 */
+    private val dummyHash: String by lazy { PasswordHasher.hash("timing-equalizer-not-a-password") }
+
     companion object {
-        private const val SMS_CODE_PREFIX = "sms:code:"
-        private const val SMS_CODE_FAILS_SUFFIX = ":fails"
-        /** 同一条验证码最多猜错几次。到了就作废，必须重新发码 —— 6 位码靠 IP 限流挡不住换 IP 的穷举。 */
-        private const val SMS_CODE_MAX_FAILS = 5
         private val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
-        private const val SMS_CODE_TTL_SECONDS = 300L  // 5 minutes
         private const val DEFAULT_PLATFORM = "unknown"
-        // logout 黑名单 TTL：与 server unified token 默认 access TTL 对齐（1h）
-        private const val LOGOUT_BLACKLIST_TTL_SECONDS = 3600L
 
         private val E164 = Regex(E164_REGEX)
+
+        /** 账号身份域，验证码与登录冷却都按它隔离（与管理员的同号手机互不影响）。 */
+        private const val REALM = "account"
     }
 
     /**
@@ -71,22 +69,23 @@ class AccountAuthLogic(
         return if (mobile.length < 8) "***" else "${mobile.take(4)}****${mobile.takeLast(4)}"
     }
 
+    /**
+     * 手机号 + 密码登录（评审 R08）：号码未注册、没设过密码、密码错误同一句提示，且都做一次等价的
+     * 哈希校验，不让人借此判断某个号码是否注册；按号码计失败次数，连续失败后冷却。
+     * 账号停用 / 注销的提示只在密码正确之后给出，不构成枚举。
+     */
     suspend fun login(request: AccountLoginRequest, remoteIp: String? = null): AccountLoginResponse {
         val mobile = requireE164(request.mobile)
-        var member = AccountTable.oneWhere {
-            Account::mobile eq mobile
-        } ?: throw BadRequestException("Invalid mobile or password")
-
-        if (member.password == null) {
-            throw BadRequestException("Password not set for this account")
-        }
-
+        throttle.ensureNotLocked(REALM, mobile)
+        val found = AccountTable.oneWhere { Account::mobile eq mobile }
         val password = request.password ?: ""
-        val storedPassword = member.password
-        val passwordVerification = PasswordHasher.verify(password, storedPassword)
-        if (!passwordVerification.verified) {
+        val passwordVerification = PasswordHasher.verify(password, found?.password ?: dummyHash)
+        if (found?.password == null || !passwordVerification.verified) {
+            throttle.recordFailure(REALM, mobile)
             throw BadRequestException("Invalid mobile or password")
         }
+        throttle.reset(REALM, mobile)
+        var member: Account = found
         if (passwordVerification.needsRehash) {
             member = member.copy(password = PasswordHasher.hash(password))
             AccountTable.update(member)
@@ -110,7 +109,7 @@ class AccountAuthLogic(
     suspend fun smsLogin(request: AccountLoginRequest, remoteIp: String? = null): AccountLoginResponse {
         val mobile = requireE164(request.mobile)
         val smsCode = request.smsCode ?: throw BadRequestException("SMS code is required")
-        verifySmsCode(mobile, smsCode)
+        verifySmsCode(mobile, SmsScene.LOGIN, smsCode)
 
         val member = AccountTable.oneWhere { Account::mobile eq mobile }
             ?: registerNewUser(
@@ -178,9 +177,9 @@ class AccountAuthLogic(
         log.info("account.delete", mapOf("userId" to userId, "already" to (member.status == model.AccountStatus.DELETED)))
     }
 
-    suspend fun logout(userId: Long) {
-        // Blacklist the user's tokens
-        redis?.set("auth:member:blacklist:$userId", "1", ttl = LOGOUT_BLACKLIST_TTL_SECONDS.seconds)
+    /** 退出当前会话：同一次登录签出的 access 与 refresh 一起失效（评审 R04）。 */
+    suspend fun logout(userId: Long, sessionId: String?, deviceId: String?) {
+        identityAdapter.logoutSession(userId, sessionId, deviceId)
         log.info("account.logout", mapOf("userId" to userId))
     }
 
@@ -226,24 +225,15 @@ class AccountAuthLogic(
             }
             SmsScene.RESET_PASSWORD,
             SmsScene.UPDATE_PASSWORD -> {
-                // 重置/修改密码：手机号必须已注册
-                AccountTable.oneWhere { Account::mobile eq mobile }
-                    ?: throw BadRequestException("Mobile number is not registered")
+                // 重置/修改密码：号码没注册就不发，但也不报错 —— 报错等于告诉任何人这个号码是不是用户。
+                if (AccountTable.oneWhere { Account::mobile eq mobile } == null) {
+                    log.info("account.sms_code.skip_unknown_mobile", mapOf("scene" to scene.purpose))
+                    return
+                }
             }
             SmsScene.LOGIN -> Unit // 登录：无需前置校验，允许自动注册
         }
-
-        // 新码配新的错误计数：上一条码猜错的次数不能带到这一条上。
-        redis?.delete("$SMS_CODE_PREFIX$mobile$SMS_CODE_FAILS_SUFFIX")
-        if (messageSendLogic != null) {
-            messageSendLogic.sendVerificationCode(mobile, scene.templateCode)
-        } else {
-            // Fallback: store code directly in Redis when SMS channel is not configured.
-            // Random.Default maps to arc4random on Native (cryptographically secure).
-            val code = Random.Default.nextInt(100000, 1000000).toString()
-            redis?.set("$SMS_CODE_PREFIX$mobile", code, ttl = SMS_CODE_TTL_SECONDS.seconds)
-            log.info("account.sms.code.generated", mapOf("mobile" to maskMobile(mobile), "scene" to scene.name))
-        }
+        codes().issue(REALM, scene.purpose, logic.VerificationCodeService.Channel.SMS, mobile, scene.messageTemplate)
     }
 
     // ── 邮箱验证码：找回密码（匿名）与绑定邮箱（登录后）──
@@ -260,7 +250,6 @@ class AccountAuthLogic(
      */
     suspend fun sendEmailCode(rawEmail: String, scene: String, userId: Long? = null) {
         val email = normalizeEmail(rawEmail)
-        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
         when (scene) {
             "reset_password" -> {
                 if (AccountTable.oneWhere { Account::email eq email } == null) {
@@ -274,13 +263,12 @@ class AccountAuthLogic(
             }
             else -> throw BadRequestException("INVALID_SCENE")
         }
-        sender.sendEmailCode(email, scene)
+        codes().issue(REALM, scene, logic.VerificationCodeService.Channel.EMAIL, email, "mail_verification_$scene")
     }
 
     suspend fun bindEmail(userId: Long, rawEmail: String, code: String) {
         val email = normalizeEmail(rawEmail)
-        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
-        if (!sender.verifyEmailCode(email, code)) throw BadRequestException("INVALID_EMAIL_CODE")
+        verifyEmailCode(email, "bind_email", code)
         val existing = AccountTable.oneWhere { Account::email eq email }
         if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
         val member = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
@@ -295,7 +283,7 @@ class AccountAuthLogic(
      */
     suspend fun changeMobile(userId: Long, rawMobile: String, code: String) {
         val mobile = requireE164(rawMobile)
-        verifySmsCode(mobile, code)
+        verifySmsCode(mobile, SmsScene.UPDATE_MOBILE, code)
         val account = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
         if (account.mobile == mobile) return
         // 发码时查过一次占用，这里再查一次：两次之间号码可能被别人绑走。不查的话撞上唯一索引，
@@ -308,33 +296,33 @@ class AccountAuthLogic(
         )
     }
 
-    /** 忘记密码：凭发到绑定手机号上的验证码重设。 */
+    /**
+     * 凭短信验证码重设密码。码可以是「修改密码」（scene=3，登录态下发到本人手机）或「忘记密码」
+     * （scene=4）发出的，按哪一条还没用掉来选；两种用途以外的码（如登录码）一律不收。
+     */
     suspend fun resetPasswordBySms(rawMobile: String, code: String, newPassword: String) {
         val mobile = requireE164(rawMobile)
-        verifySmsCode(mobile, code)
+        val scene = if (codes().hasPending(REALM, SmsScene.UPDATE_PASSWORD.purpose, logic.VerificationCodeService.Channel.SMS, mobile)) {
+            SmsScene.UPDATE_PASSWORD
+        } else {
+            SmsScene.RESET_PASSWORD
+        }
+        verifySmsCode(mobile, scene, code)
         val account = AccountTable.oneWhere { Account::mobile eq mobile }
-            ?: throw NotFoundException("Account not found with mobile: $mobile")
+            ?: throw BadRequestException("SMS code expired or not sent")
         AccountTable.update(account.copy(password = PasswordHasher.hash(newPassword)))
         identityAdapter.onPasswordChanged(port.AccountPasswordChangedEvent(memberId = account.id))
     }
 
     suspend fun resetPasswordByEmail(rawEmail: String, code: String, newPassword: String) {
         val email = normalizeEmail(rawEmail)
-        val sender = messageSendLogic ?: throw BadRequestException("EMAIL_CHANNEL_UNAVAILABLE")
-        if (!sender.verifyEmailCode(email, code)) throw BadRequestException("INVALID_EMAIL_CODE")
+        verifyEmailCode(email, "reset_password", code)
         val member = AccountTable.oneWhere { Account::email eq email } ?: throw BadRequestException("INVALID_EMAIL_CODE")
-        AccountTable.update(member.copy(password = PasswordHasher.hash(newPassword), sessionVersion = member.sessionVersion + 1))
+        // 会话版本由 onPasswordChanged 统一自增，这里不再另加一次。
+        AccountTable.update(member.copy(password = PasswordHasher.hash(newPassword)))
         identityAdapter.onPasswordChanged(port.AccountPasswordChangedEvent(memberId = member.id))
     }
 
-    suspend fun validateSmsCode(rawMobile: String, code: String): Boolean {
-        return try {
-            verifySmsCode(requireE164(rawMobile), code)
-            true
-        } catch (_: Exception) {
-            false
-        }
-    }
 
     // --- Social login ---
 
@@ -399,38 +387,24 @@ class AccountAuthLogic(
 
     // --- Private helpers ---
 
-    private suspend fun verifySmsCode(mobile: String, code: String) {
-        val redisInstance = redis ?: throw BadRequestException("SMS code service unavailable")
-        val key = "$SMS_CODE_PREFIX$mobile"
-        val failsKey = "$key$SMS_CODE_FAILS_SUFFIX"
+    private fun codes(): logic.VerificationCodeService =
+        verificationCodes ?: throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.SERVICE_UNAVAILABLE, "VERIFICATION_UNAVAILABLE")
 
-        // 校验、消费、记错一次性在 Lua 里完成，避免 TOCTOU。
-        // 返回：0 = 没有码，1 = 码不对，2 = 对上并已消费，3 = 猜错次数到上限、码已作废。
-        val script = """
-            local val = redis.call('GET', KEYS[1])
-            if val == false then return 0 end
-            if val == ARGV[1] then
-                redis.call('DEL', KEYS[1], KEYS[2])
-                return 2
-            end
-            local fails = redis.call('INCR', KEYS[2])
-            if fails == 1 then redis.call('EXPIRE', KEYS[2], ARGV[2]) end
-            if fails >= tonumber(ARGV[3]) then
-                redis.call('DEL', KEYS[1], KEYS[2])
-                return 3
-            end
-            return 1
-        """.trimIndent()
+    /** 码按「账号域 + 用途 + 接收方」核验并消费，原子计错、猜错到上限作废（system 的 VerificationCodeService）。 */
+    private suspend fun verifySmsCode(mobile: String, scene: SmsScene, code: String) {
+        when (codes().verify(REALM, scene.purpose, logic.VerificationCodeService.Channel.SMS, mobile, code)) {
+            logic.VerificationCodeService.Result.OK -> Unit
+            logic.VerificationCodeService.Result.INVALID -> throw BadRequestException("Invalid SMS code")
+            logic.VerificationCodeService.Result.LOCKED -> throw BadRequestException("Too many wrong attempts, please request a new code")
+            logic.VerificationCodeService.Result.EXPIRED -> throw BadRequestException("SMS code expired or not sent")
+        }
+    }
 
-        when (redisInstance.evalToLong(
-            script,
-            listOf(key, failsKey),
-            listOf(code, SMS_CODE_TTL_SECONDS.toString(), SMS_CODE_MAX_FAILS.toString()),
-        )) {
-            0L -> throw BadRequestException("SMS code expired or not sent")
-            1L -> throw BadRequestException("Invalid SMS code")
-            3L -> throw BadRequestException("Too many wrong attempts, please request a new code")
-            // 2L = matched and consumed; fall through
+    private suspend fun verifyEmailCode(email: String, purpose: String, code: String) {
+        when (codes().verify(REALM, purpose, logic.VerificationCodeService.Channel.EMAIL, email, code)) {
+            logic.VerificationCodeService.Result.OK -> Unit
+            logic.VerificationCodeService.Result.LOCKED -> throw BadRequestException("Too many wrong attempts, please request a new code")
+            else -> throw BadRequestException("INVALID_EMAIL_CODE")
         }
     }
 
@@ -530,14 +504,16 @@ class AccountAuthLogic(
         val normalized = username.trim().lowercase()
         // 凭证错误是认证失败(401/10011),不是参数错误(400/10100);message 用机器码,
         // 客户端按码映射本地化文案(用户拍板:错误必须人话,不泄原始异常)。
-        var member = AccountTable.oneWhere { Account::username eq normalized }
-            ?: throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.INVALID_CREDENTIALS, "INVALID_CREDENTIALS")
-        val stored = member.password
-            ?: throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.INVALID_CREDENTIALS, "INVALID_CREDENTIALS")
-        val verification = PasswordHasher.verify(password, stored)
-        if (!verification.verified) {
+        // 用户不存在 / 没设密码也做一次等价哈希校验，失败耗时不暴露账号是否存在；按账号冷却（评审 R08）。
+        throttle.ensureNotLocked(REALM, normalized)
+        val found = AccountTable.oneWhere { Account::username eq normalized }
+        val verification = PasswordHasher.verify(password, found?.password ?: dummyHash)
+        if (found?.password == null || !verification.verified) {
+            throttle.recordFailure(REALM, normalized)
             throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.INVALID_CREDENTIALS, "INVALID_CREDENTIALS")
         }
+        throttle.reset(REALM, normalized)
+        var member: Account = found
         if (verification.needsRehash) {
             member = member.copy(password = PasswordHasher.hash(password))
             AccountTable.update(member)

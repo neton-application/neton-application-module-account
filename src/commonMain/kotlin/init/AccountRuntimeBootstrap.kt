@@ -3,7 +3,6 @@ package init
 import neton.core.component.NetonContext
 import neton.logging.LoggerFactory
 import neton.redis.RedisClient
-import logic.MessageSendLogic
 import logic.SocialUserLogic
 import port.AccountIdentityAdapter
 import impl.BuiltinAccountIdentityAdapter
@@ -25,12 +24,14 @@ object AccountRuntimeBootstrap {
         val jwt = ctx.get(JwtAuthenticator::class)
         val db = ctx.get(neton.database.api.DbContext::class)
         ctx.bindIfAbsent(AccountIdentityAdapter::class,
-            BuiltinAccountIdentityAdapter(jwt = jwt, db = db))
+            BuiltinAccountIdentityAdapter(jwt = jwt, db = db, revocation = ctx.get(security.SessionRevocation::class)))
         val identityAdapter = ctx.get(AccountIdentityAdapter::class)
+        // 账号域登记：/app、/manage 只接受 realm=account 的令牌（或外部统一令牌）。
+        // 登记表由 system 的安全装配创建；没有它说明 system 未装配，鉴权本身就不存在。
+        ctx.get(security.TokenRealmRegistry::class).register(security.AccountTokenRealm(adapter = { identityAdapter }))
 
         // 跨模块依赖（nullable: 对应模块未装配时降级）
         val redis = ctx.getOrNull(RedisClient::class)
-        val messageSendLogic = ctx.getOrNull(MessageSendLogic::class)
         val socialUserLogic = ctx.getOrNull(SocialUserLogic::class)
 
         val accountLogic = ctx.get(AccountLogic::class)
@@ -63,8 +64,8 @@ object AccountRuntimeBootstrap {
             db = ctx.get(neton.database.api.DbContext::class),
             identityAdapter = identityAdapter,
             requiredActionsLogic = requiredActionsLogic,
-            redis = redis,
-            messageSendLogic = messageSendLogic,
+            verificationCodes = ctx.getOrNull(logic.VerificationCodeService::class),
+            throttle = security.LoginThrottle(redis),
             socialUserLogic = socialUserLogic,
             authPolicy = authPolicy,
             extensions = extensions,
