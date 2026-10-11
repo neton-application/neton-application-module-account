@@ -200,6 +200,6 @@ class AccountSelfController(
             else -> throw BadRequestException("Unexpected scene: $scene")
         }
 
-        accountAuthLogic.sendSmsCode(mobile, scene)
+        accountAuthLogic.sendSmsCode(mobile, scene, userId)
     }
 }

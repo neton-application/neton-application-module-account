@@ -65,7 +65,7 @@ object AccountRuntimeBootstrap {
             identityAdapter = identityAdapter,
             requiredActionsLogic = requiredActionsLogic,
             verificationCodes = ctx.getOrNull(logic.VerificationCodeService::class),
-            throttle = security.LoginThrottle(redis),
+            throttle = security.LoginThrottle(redis, init.loginThrottleKey(ctx)),
             socialUserLogic = socialUserLogic,
             authPolicy = authPolicy,
             extensions = extensions,
