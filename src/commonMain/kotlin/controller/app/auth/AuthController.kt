@@ -99,6 +99,12 @@ class AuthController(
      * 只能注销**自己**：用户 id 取自会话身份，不接受请求体传入——否则就成了
      * 「随便报一个 id 就能删别人账号」。
      */
+    /** 全端退出：作废该账号在所有设备上的会话（含当前会话）。 */
+    @Post("/logout-all")
+    suspend fun logoutAll(identity: neton.core.interfaces.Identity) {
+        accountAuthLogic.logoutAll(identity.id.toLong())
+    }
+
     @Post("/delete-account")
     suspend fun deleteAccount(identity: neton.core.interfaces.Identity) {
         accountAuthLogic.deleteOwnAccount(identity.id.toLong())

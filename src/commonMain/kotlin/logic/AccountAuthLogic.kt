@@ -177,6 +177,12 @@ class AccountAuthLogic(
         log.info("account.delete", mapOf("userId" to userId, "already" to (member.status == model.AccountStatus.DELETED)))
     }
 
+    /** 全端退出：该账号所有设备上的会话一起失效。 */
+    suspend fun logoutAll(userId: Long) {
+        identityAdapter.revokeAllSessions(userId, reason = "logout_all")
+        log.info("account.logout_all", mapOf("userId" to userId))
+    }
+
     /** 退出当前会话：同一次登录签出的 access 与 refresh 一起失效（评审 R04）。 */
     suspend fun logout(userId: Long, sessionId: String?, deviceId: String?) {
         identityAdapter.logoutSession(userId, sessionId, deviceId)
