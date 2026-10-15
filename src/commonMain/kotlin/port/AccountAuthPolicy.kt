@@ -1,8 +1,9 @@
 package port
 
 /**
- * 注册策略(MEMBER_INVITE_CODE §5.0):产品装配层(PrivChat)从 conf 读取并 bind;
- * 未装配用默认值。bootstrap `/config/bootstrap` 的 auth 块下发同一份给客户端。
+ * 注册策略(MEMBER_INVITE_CODE §5.0)。来源优先级:产品装配层在代码里 bind 的(PrivChat 从
+ * privchat.conf 读) > account 自己的 `config/account.conf` `[auth]` 段(见 [init.AccountAuthPolicyConfig])
+ * > 默认值。bootstrap `/config/bootstrap` 的 auth 块下发同一份给客户端。
  * `inviteCodeRequired` 只作用于**新注册流程**;存量用户登录不受影响(评审 B)。
  */
 data class AccountAuthPolicy(

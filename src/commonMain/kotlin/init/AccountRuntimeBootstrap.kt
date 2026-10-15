@@ -37,7 +37,9 @@ object AccountRuntimeBootstrap {
         val socialUserLogic = ctx.getOrNull(SocialUserLogic::class)
 
         val accountLogic = ctx.get(AccountLogic::class)
-        // 注册策略由产品装配层 bind（privchat 从 conf 读），未装配用默认（仅 PHONE_SMS）。
+        // 注册策略：产品装配层在代码里绑定的优先（privchat 从自己的 conf 读）；没人绑定时读
+        // account 自己的 config/account.conf [auth]；都没有用默认（仅 PHONE_SMS）。
+        AccountAuthPolicyConfig.load(ctx)?.let { ctx.bindIfAbsent(port.AccountAuthPolicy::class, it) }
         val authPolicy = ctx.getOrNull(port.AccountAuthPolicy::class) ?: port.AccountAuthPolicy()
 
         // 扩展点：依赖 account 的模块（拓扑序更晚）在各自 bootstrap 里往这里登记，
