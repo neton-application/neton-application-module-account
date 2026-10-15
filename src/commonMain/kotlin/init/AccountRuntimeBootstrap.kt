@@ -26,6 +26,8 @@ object AccountRuntimeBootstrap {
         ctx.bindIfAbsent(AccountIdentityAdapter::class,
             BuiltinAccountIdentityAdapter(jwt = jwt, db = db, revocation = ctx.get(security.SessionRevocation::class)))
         val identityAdapter = ctx.get(AccountIdentityAdapter::class)
+        // 公开资料批量读取：默认读本库 account_users；资料真源在别处的产品 / 适配器先绑定即可覆盖。
+        ctx.bindIfAbsent(port.AccountProfileReader::class, impl.AccountTableProfileReader(db))
         // 账号域登记：/app、/manage 只接受 realm=account 的令牌（或外部统一令牌）。
         // 登记表由 system 的安全装配创建；没有它说明 system 未装配，鉴权本身就不存在。
         ctx.get(security.TokenRealmRegistry::class).register(security.AccountTokenRealm(adapter = { identityAdapter }))
