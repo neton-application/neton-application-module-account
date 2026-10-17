@@ -7,7 +7,6 @@ import controller.admin.account.dto.UpdateAccountPasswordRequest
 import dto.PageResponse
 import logic.AccountLogic
 import logic.NicknameGenerator
-import logic.AccountGeoLocationService
 import logic.AccountLoginDeviceLogic
 import model.Account
 import neton.core.annotations.Controller
@@ -24,8 +23,9 @@ class AccountUserController(
     private val accountLogic: AccountLogic,
     private val nicknameGenerator: NicknameGenerator,
     private val accountLoginDeviceLogic: AccountLoginDeviceLogic,
+    /** 套件统一的 IP 属地端口（infra 默认实现，spec content-platform-architecture §5.6）。 */
+    private val ipRegions: contract.core.IpRegionResolver,
 ) {
-    private val geoLocation = AccountGeoLocationService.fromConfig()
 
     @Put("/update")
     @Permission("account:user:update")
@@ -111,7 +111,7 @@ class AccountUserController(
         }
     }
 
-    private fun Account.toAdminVO() = AccountVO(
+    private suspend fun Account.toAdminVO() = AccountVO(
         id = id,
         identityProvider = identityProvider,
         username = username,
@@ -128,13 +128,23 @@ class AccountUserController(
         registerIp = registerIp,
         // 注册地按注册 IP 反查：新注册、还没登录过的账号 login_ip 是空的，
         // 只认登录 IP 的话这类账号在后台完全看不出来自哪里。
-        registerRegion = geoLocation.resolve(registerIp),
+        registerRegion = regionOf(registerIp),
         loginIp = loginIp,
-        loginRegion = geoLocation.resolve(loginIp),
+        loginRegion = regionOf(loginIp),
         loginDate = loginDate,
         createdAt = createdAt,
         updatedAt = updatedAt,
     )
+
+    /**
+     * 后台看得更细：国家 + 省 + 城市（「中国 吉林 长春」）；私有地址与查不到的显示「未知」，
+     * 库未配置或地址不合法时为 null（不展示）。
+     */
+    private suspend fun regionOf(ip: String?): String? {
+        val address = ip?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        val r = ipRegions.region(address) ?: return null
+        return listOfNotNull(r.country, r.province, r.city).distinct().joinToString(" ").ifBlank { r.display }
+    }
 
     /** 扫所有 is_robot=1 且 nickname 为 null/空 的陪玩账号，用 [NicknameGenerator] 词库随机补昵称。
      *

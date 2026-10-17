@@ -40,10 +40,8 @@ kotlin {
             dependencies {
                 implementation("com.netonstream.app:module-system")
                 implementation("com.netonstream.app:module-infra")
-                // group 是 com.netonstream（见 geolite4k/build.gradle.kts:10）。写成
-                // com.netonframework 会让 includeBuild 的坐标替换失配，Gradle 转而去
-                // 远程仓库找一个不存在的制品；版本也交给复合构建，不硬编。
-                implementation("com.netonstream:geolite4k")
+                // 套件基础契约：IP 属地经 contract.core.IpRegionResolver（infra 实现），account 不再直接依赖 geolite4k。
+                implementation("com.netonstream.app:application-contract")
                 // 身份后端走 AccountIdentityAdapter 抽象，不直接依赖 privchat。
                 implementation("com.netonstream:neton-core")
                 implementation("com.netonstream:neton-routing")

@@ -10,7 +10,7 @@ rootProject.name = "module-account"
 
 // 框架
 includeBuild("../neton")
-includeBuild("../geolite4k")
+includeBuild("../neton-application-contract")
 
 // 兄弟模块：build.gradle.kts 按 com.netonstream.app:module-* 声明依赖，而这些 artifact
 // 从未发布到任何仓库。includeBuild 让 Gradle 用同工作区的源码去替换那些坐标，本仓才能
