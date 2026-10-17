@@ -109,6 +109,25 @@ tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)"
     dependsOn("kspKotlinMacosArm64")
 }
 
+// 真实数据库契约测试：*DbTest 在 ACCOUNT_DB_URI 缺省时整组跳过，普通 macosArm64Test 照常绿；
+// 要真跑就用这个任务（角色须有 CREATEDB）：
+//   ACCOUNT_DB_URI=postgresql://user:pass@localhost:5432/postgres ./gradlew postgresContractTest
+val postgresContractClasses = listOf("logic.AccountPreferenceDbTest")
+
+tasks.register<Exec>("postgresContractTest") {
+    group = "verification"
+    description = "Runs the account contracts against a real PostgreSQL (ACCOUNT_DB_URI required)."
+    dependsOn("linkDebugTestMacosArm64")
+    val binary = layout.buildDirectory.file("bin/macosArm64/debugTest/test.kexe")
+    executable(binary.get().asFile.absolutePath)
+    args("--ktest_filter=" + postgresContractClasses.joinToString(":") { "$it.*" })
+    doFirst {
+        check(!System.getenv("ACCOUNT_DB_URI").isNullOrBlank()) {
+            "postgresContractTest requires ACCOUNT_DB_URI (a PostgreSQL URI whose role has CREATEDB)."
+        }
+    }
+}
+
 // Embed SQL migration resources into binary (no runtime file IO).
 extra["neton.migration.moduleId"] = "account"
 extra["neton.migration.dialects"] = listOf("postgresql")

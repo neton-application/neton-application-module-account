@@ -63,6 +63,13 @@ object AccountRuntimeBootstrap {
             db = ctx.get(neton.database.api.DbContext::class),
             identityAdapter = identityAdapter,
         ))
+        // 账号偏好：限额可由产品装配层先绑定 AccountPreferenceLogic.Limits 覆盖。
+        val preferenceLogic = AccountPreferenceLogic(
+            log = loggerFactory.get("logic.account-preference"),
+            db = db,
+            limits = ctx.getOrNull(AccountPreferenceLogic.Limits::class) ?: AccountPreferenceLogic.Limits(),
+        )
+        ctx.bind(AccountPreferenceLogic::class, preferenceLogic)
         ctx.bind(AccountAuthLogic::class, AccountAuthLogic(
             log = loggerFactory.get("logic.account-auth"),
             db = ctx.get(neton.database.api.DbContext::class),
@@ -74,6 +81,7 @@ object AccountRuntimeBootstrap {
             authPolicy = authPolicy,
             extensions = extensions,
             loginDeviceLogic = loginDeviceLogic,
+            preferences = preferenceLogic,
         ))
         ctx.bind(AccountProfileLogic::class, AccountProfileLogic(
             log = loggerFactory.get("logic.account-profile"),

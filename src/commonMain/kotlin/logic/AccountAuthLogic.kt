@@ -36,6 +36,8 @@ class AccountAuthLogic(
     private val extensions: port.AccountExtensions = port.AccountExtensions(),
     private val loginDeviceLogic: AccountLoginDeviceLogic? = null,
     private val throttle: security.LoginThrottle = security.LoginThrottle(null),
+    /** 注销时清理账号偏好；未装配（测试或裁剪部署）时跳过。 */
+    private val preferences: AccountPreferenceLogic? = null,
 ) {
 
     /** 记一次凭据失败；跨来源失败多了只记安全事件，不锁号（spec auth-abuse-protection §4.1）。 */
@@ -193,6 +195,8 @@ class AccountAuthLogic(
                 set(Account::status, model.AccountStatus.DELETED)
                 increment(Account::sessionVersion)
             }
+        // 3) 清掉账号偏好（spec account-preferences §6）。重复注销会再跑一遍，失败可重试补上。
+        preferences?.deleteAllFor(userId)
         log.info("account.delete", mapOf("userId" to userId, "already" to (member.status == model.AccountStatus.DELETED)))
     }
 
