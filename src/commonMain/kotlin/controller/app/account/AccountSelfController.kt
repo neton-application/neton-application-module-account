@@ -160,8 +160,15 @@ class AccountSelfController(
         identityAdapter?.onPasswordChanged(AccountPasswordChangedEvent(memberId = userId))
     }
 
+    /**
+     * 忘记密码（短信）：**匿名**入口，未登录也能用。码来自 `POST /app/auth/send-sms-code` scene=4
+     * （或登录态下 `/member/user/send-sms-code` scene=3），经统一的 VerificationCodeService 按
+     * 「账号域 + 用途 + 手机号」核验并一次性消费；未注册号码从不发码，提交时与「码已过期」同一错误，
+     * 不暴露号码是否注册（spec auth-abuse-protection §2.1 / §4.2）。
+     */
     @Put("/reset-password")
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
+    @AllowAnonymous
+    @RateLimit(windowSeconds = 300, maxRequests = 5, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
     suspend fun resetPassword(@Body request: ResetPasswordBySmsRequest) {
         accountAuthLogic.resetPasswordBySms(request.mobile, request.smsCode, request.newPassword)
     }

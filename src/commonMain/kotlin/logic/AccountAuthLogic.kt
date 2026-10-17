@@ -45,8 +45,11 @@ class AccountAuthLogic(
         }
     }
 
-    /** 账号不存在时用它做一次等价的哈希校验，让失败耗时与真实账号一致。 */
-    private val dummyHash: String by lazy { PasswordHasher.hash("timing-equalizer-not-a-password") }
+    /**
+     * 账号不存在时用它做一次等价的哈希校验，让失败耗时与真实账号一致。构造时就算好（spec
+     * auth-abuse-protection §4.2：假哈希在初始化阶段准备），不让第一次失败登录多付一次哈希。
+     */
+    private val dummyHash: String = PasswordHasher.hash("timing-equalizer-not-a-password")
 
     companion object {
         private val EMAIL_REGEX = Regex("^[^@\\s]+@[^@\\s]+\\.[^@\\s]+$")
@@ -69,6 +72,15 @@ class AccountAuthLogic(
         val trimmed = mobile.trim()
         if (!E164.matches(trimmed)) throw BadRequestException(E164_MESSAGE)
         return trimmed
+    }
+
+    /**
+     * 新密码长度 8–128，与注册、请求 DTO 注解一致。逻辑层显式再查一遍：多模块装配下注解校验器
+     * 可能没有生效（见 [requireE164] 的说明），不能只靠注解。
+     */
+    private fun requireNewPassword(password: String) {
+        if (password.length < 8) throw BadRequestException("PASSWORD_TOO_SHORT")
+        if (password.length > 128) throw BadRequestException("PASSWORD_TOO_LONG")
     }
 
     private fun maskMobile(mobile: String): String {
@@ -317,6 +329,8 @@ class AccountAuthLogic(
      */
     suspend fun resetPasswordBySms(rawMobile: String, code: String, newPassword: String) {
         val mobile = requireE164(rawMobile)
+        // 先校验新密码再核验验证码：密码不合规不该白白用掉用户刚收到的码。
+        requireNewPassword(newPassword)
         val scene = if (codes().hasPending(REALM, SmsScene.UPDATE_PASSWORD.purpose, logic.VerificationCodeService.Channel.SMS, mobile)) {
             SmsScene.UPDATE_PASSWORD
         } else {
@@ -331,6 +345,7 @@ class AccountAuthLogic(
 
     suspend fun resetPasswordByEmail(rawEmail: String, code: String, newPassword: String) {
         val email = normalizeEmail(rawEmail)
+        requireNewPassword(newPassword)
         verifyEmailCode(email, "reset_password", code)
         val member = AccountTable.oneWhere { Account::email eq email } ?: throw BadRequestException("INVALID_EMAIL_CODE")
         // 会话版本由 onPasswordChanged 统一自增，这里不再另加一次。
