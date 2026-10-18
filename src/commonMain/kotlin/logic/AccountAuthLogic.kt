@@ -6,7 +6,6 @@ import port.IssueMemberTokenCommand
 import port.RefreshMemberTokenCommand
 import port.AccountTokenBundle
 import controller.admin.auth.dto.LoginDeviceInfo
-import controller.app.auth.dto.E164_MESSAGE
 import controller.app.auth.dto.E164_REGEX
 import controller.app.auth.dto.RequiredAction
 import enums.SmsScene
@@ -18,6 +17,10 @@ import neton.database.dsl.*
 
 import neton.logging.Logger
 import neton.core.http.BadRequestException
+import neton.core.http.HttpException
+import neton.core.http.NetonErrorCode
+import neton.core.http.ValidationError
+import logic.AccountErrorCodes as E
 import neton.core.http.NotFoundException
 import neton.security.password.PasswordHasher
 import kotlin.random.Random
@@ -72,7 +75,7 @@ class AccountAuthLogic(
      */
     private fun requireE164(mobile: String): String {
         val trimmed = mobile.trim()
-        if (!E164.matches(trimmed)) throw BadRequestException(E164_MESSAGE)
+        if (!E164.matches(trimmed)) throw BadRequestException(E.INVALID_MOBILE, listOf(ValidationError("mobile", E.INVALID_MOBILE, E.INVALID_MOBILE)))
         return trimmed
     }
 
@@ -81,8 +84,19 @@ class AccountAuthLogic(
      * 可能没有生效（见 [requireE164] 的说明），不能只靠注解。
      */
     private fun requireNewPassword(password: String) {
-        if (password.length < 8) throw BadRequestException("PASSWORD_TOO_SHORT")
-        if (password.length > 128) throw BadRequestException("PASSWORD_TOO_LONG")
+        if (password.length < 8) {
+            throw BadRequestException(E.PASSWORD_TOO_SHORT, listOf(ValidationError("newPassword", E.PASSWORD_TOO_SHORT, E.PASSWORD_TOO_SHORT)))
+        }
+        if (password.length > 128) {
+            throw BadRequestException(E.PASSWORD_TOO_LONG, listOf(ValidationError("newPassword", E.PASSWORD_TOO_LONG, E.PASSWORD_TOO_LONG)))
+        }
+    }
+
+    /** 白名单：只有 NORMAL 放行；写成「== DISABLED 就拒绝」的话，新增状态（如 DELETED）会被默默放行。 */
+    private fun requireUsable(member: Account) {
+        if (member.status == model.AccountStatus.NORMAL) return
+        if (member.status == model.AccountStatus.DELETED) throw HttpException(NetonErrorCode.USER_BANNED, E.ACCOUNT_DELETED)
+        throw HttpException(NetonErrorCode.USER_BANNED, E.ACCOUNT_DISABLED)
     }
 
     private fun maskMobile(mobile: String): String {
@@ -103,7 +117,7 @@ class AccountAuthLogic(
         val passwordVerification = PasswordHasher.verify(password, found?.password ?: dummyHash)
         if (found?.password == null || !passwordVerification.verified) {
             recordLoginFailure(mobile, remoteIp, found?.id)
-            throw BadRequestException("Invalid mobile or password")
+            throw HttpException(NetonErrorCode.INVALID_CREDENTIALS, E.INVALID_CREDENTIALS)
         }
         throttle.reset(REALM, mobile, remoteIp)
         var member: Account = found
@@ -112,14 +126,7 @@ class AccountAuthLogic(
             AccountTable.update(member)
         }
 
-        // 🔴 白名单判断：只有 NORMAL 放行。
-        // 写成 `== DISABLED 就拒绝` 的话，新增状态（如 DELETED）会被默默放行。
-        if (member.status != model.AccountStatus.NORMAL) {
-            throw BadRequestException(
-                if (member.status == model.AccountStatus.DELETED) "Account is deleted"
-                else "Account is disabled"
-            )
-        }
+        requireUsable(member)
 
         recordSuccessfulLogin(member, remoteIp)
 
@@ -129,7 +136,11 @@ class AccountAuthLogic(
 
     suspend fun smsLogin(request: AccountLoginRequest, remoteIp: String? = null): AccountLoginResponse {
         val mobile = requireE164(request.mobile)
-        val smsCode = request.smsCode ?: throw BadRequestException("SMS code is required")
+        val smsCode = request.smsCode ?: throw HttpException(
+            NetonErrorCode.MISSING_REQUIRED_PARAM,
+            E.SMS_CODE_REQUIRED,
+            listOf(ValidationError("smsCode", E.SMS_CODE_REQUIRED, E.SMS_CODE_REQUIRED)),
+        )
         verifySmsCode(mobile, SmsScene.LOGIN, smsCode)
 
         val member = AccountTable.oneWhere { Account::mobile eq mobile }
@@ -140,14 +151,7 @@ class AccountAuthLogic(
                 buildMember = { registerViaAdapter(mobile, nickname = request.nickname, registerIp = remoteIp) },
             )
 
-        // 🔴 白名单判断：只有 NORMAL 放行。
-        // 写成 `== DISABLED 就拒绝` 的话，新增状态（如 DELETED）会被默默放行。
-        if (member.status != model.AccountStatus.NORMAL) {
-            throw BadRequestException(
-                if (member.status == model.AccountStatus.DELETED) "Account is deleted"
-                else "Account is disabled"
-            )
-        }
+        requireUsable(member)
 
         recordSuccessfulLogin(member, remoteIp)
 
@@ -177,13 +181,10 @@ class AccountAuthLogic(
     suspend fun deleteOwnAccount(userId: Long) {
         // 0) 开关。客户端不显示入口只是展示层，这里才是真正关得掉的地方。
         if (!authPolicy.accountDeletionEnabled) {
-            throw neton.core.http.HttpException(
-                neton.core.http.NetonErrorCode.PERMISSION_DENIED,
-                "Account deletion is not enabled",
-            )
+            throw HttpException(NetonErrorCode.PERMISSION_DENIED, E.ACCOUNT_DELETION_DISABLED)
         }
         val member = AccountTable.get(userId)
-            ?: throw NotFoundException("Account not found")
+            ?: throw NotFoundException(E.ACCOUNT_NOT_FOUND)
 
         // 1) 先撤销全部设备会话。失败就抛出去——宁可让客户端看到失败去重试，
         //    也不能返回"注销成功"而会话还活着。
@@ -218,7 +219,11 @@ class AccountAuthLogic(
      */
     suspend fun refreshToken(refreshToken: String, requestDeviceId: String?): AccountLoginResponse {
         val deviceId = requestDeviceId?.takeIf { it.isNotBlank() }
-            ?: throw BadRequestException("device_id is required for refresh")
+            ?: throw HttpException(
+                NetonErrorCode.MISSING_REQUIRED_PARAM,
+                E.DEVICE_ID_REQUIRED,
+                listOf(ValidationError("deviceId", E.DEVICE_ID_REQUIRED, E.DEVICE_ID_REQUIRED)),
+            )
         val bundle = identityAdapter.refreshToken(
             RefreshMemberTokenCommand(refreshToken = refreshToken, deviceId = deviceId),
         )
@@ -228,12 +233,7 @@ class AccountAuthLogic(
         //
         // 放在签发之后：先让 server 认出这是谁（refresh token 里才有 uid），再按 uid 查状态。
         val refreshed = AccountTable.get(bundle.userId)
-        if (refreshed != null && refreshed.status != model.AccountStatus.NORMAL) {
-            throw neton.core.http.HttpException(
-                neton.core.http.NetonErrorCode.USER_BANNED,
-                if (refreshed.status == model.AccountStatus.DELETED) "ACCOUNT_DELETED" else "ACCOUNT_DISABLED",
-            )
-        }
+        if (refreshed != null) requireUsable(refreshed)
         log.info("account.token.refreshed", mapOf("userId" to bundle.userId))
         // R8.4a：refresh 路径也带最新 required actions（用户可能在另一端完成
         // 了 onboarding，本端 refresh 后应该立刻拿到空数组）。
@@ -250,7 +250,7 @@ class AccountAuthLogic(
                 // 修改手机：新手机号不能已被其他用户使用
                 val existing = AccountTable.oneWhere { Account::mobile eq mobile }
                 if (existing != null) {
-                    throw BadRequestException("Mobile number is already in use")
+                    throw HttpException(NetonErrorCode.RESOURCE_ALREADY_EXISTS, E.MOBILE_IN_USE, listOf(ValidationError("mobile", E.MOBILE_IN_USE, E.MOBILE_IN_USE)))
                 }
             }
             SmsScene.RESET_PASSWORD,
@@ -270,7 +270,7 @@ class AccountAuthLogic(
 
     fun normalizeEmail(raw: String): String {
         val e = raw.trim().lowercase()
-        if (!EMAIL_REGEX.matches(e)) throw BadRequestException("INVALID_EMAIL")
+        if (!EMAIL_REGEX.matches(e)) throw BadRequestException(E.INVALID_EMAIL, listOf(ValidationError("email", E.INVALID_EMAIL, E.INVALID_EMAIL)))
         return e
     }
 
@@ -289,9 +289,9 @@ class AccountAuthLogic(
             }
             "bind_email" -> {
                 val existing = AccountTable.oneWhere { Account::email eq email }
-                if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
+                if (existing != null && existing.id != userId) throw HttpException(NetonErrorCode.RESOURCE_ALREADY_EXISTS, E.EMAIL_TAKEN, listOf(ValidationError("email", E.EMAIL_TAKEN, E.EMAIL_TAKEN)))
             }
-            else -> throw BadRequestException("INVALID_SCENE")
+            else -> throw BadRequestException(E.INVALID_SCENE, listOf(ValidationError("scene", E.INVALID_SCENE, E.INVALID_SCENE)))
         }
         val actor = if (scene == "bind_email") requireNotNull(userId) { "bind_email requires the signed-in account" }.toString() else null
         codes().issue(REALM, scene, logic.VerificationCodeService.Channel.EMAIL, email, "mail_verification_$scene", actor)
@@ -301,8 +301,8 @@ class AccountAuthLogic(
         val email = normalizeEmail(rawEmail)
         verifyEmailCode(email, "bind_email", code, actor = userId.toString())
         val existing = AccountTable.oneWhere { Account::email eq email }
-        if (existing != null && existing.id != userId) throw BadRequestException("EMAIL_TAKEN")
-        val member = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
+        if (existing != null && existing.id != userId) throw HttpException(NetonErrorCode.RESOURCE_ALREADY_EXISTS, E.EMAIL_TAKEN, listOf(ValidationError("email", E.EMAIL_TAKEN, E.EMAIL_TAKEN)))
+        val member = AccountTable.get(userId) ?: throw NotFoundException(E.ACCOUNT_NOT_FOUND)
         AccountTable.update(member.copy(email = email))
     }
 
@@ -315,12 +315,12 @@ class AccountAuthLogic(
     suspend fun changeMobile(userId: Long, rawMobile: String, code: String) {
         val mobile = requireE164(rawMobile)
         verifySmsCode(mobile, SmsScene.UPDATE_MOBILE, code, actor = userId.toString())
-        val account = AccountTable.get(userId) ?: throw NotFoundException("Account not found: $userId")
+        val account = AccountTable.get(userId) ?: throw NotFoundException(E.ACCOUNT_NOT_FOUND)
         if (account.mobile == mobile) return
         // 发码时查过一次占用，这里再查一次：两次之间号码可能被别人绑走。不查的话撞上唯一索引，
         // 用户看到的是一条数据库异常。
         val holder = AccountTable.oneWhere { Account::mobile eq mobile }
-        if (holder != null && holder.id != userId) throw BadRequestException("Mobile number is already in use")
+        if (holder != null && holder.id != userId) throw HttpException(NetonErrorCode.RESOURCE_ALREADY_EXISTS, E.MOBILE_IN_USE, listOf(ValidationError("mobile", E.MOBILE_IN_USE, E.MOBILE_IN_USE)))
         AccountTable.update(account.copy(mobile = mobile))
         identityAdapter.onMobileChanged(
             port.AccountMobileChangedEvent(memberId = userId, newMobile = mobile, oldMobile = account.mobile),
@@ -342,7 +342,7 @@ class AccountAuthLogic(
         }
         verifySmsCode(mobile, scene, code)
         val account = AccountTable.oneWhere { Account::mobile eq mobile }
-            ?: throw BadRequestException("SMS code expired or not sent")
+            ?: throw BadRequestException(E.SMS_CODE_EXPIRED, listOf(ValidationError("smsCode", E.SMS_CODE_EXPIRED, E.SMS_CODE_EXPIRED)))
         AccountTable.update(account.copy(password = PasswordHasher.hash(newPassword)))
         identityAdapter.onPasswordChanged(port.AccountPasswordChangedEvent(memberId = account.id))
     }
@@ -351,7 +351,7 @@ class AccountAuthLogic(
         val email = normalizeEmail(rawEmail)
         requireNewPassword(newPassword)
         verifyEmailCode(email, "reset_password", code)
-        val member = AccountTable.oneWhere { Account::email eq email } ?: throw BadRequestException("INVALID_EMAIL_CODE")
+        val member = AccountTable.oneWhere { Account::email eq email } ?: throw BadRequestException(E.INVALID_EMAIL_CODE, listOf(ValidationError("code", E.INVALID_EMAIL_CODE, E.INVALID_EMAIL_CODE)))
         // 会话版本由 onPasswordChanged 统一自增，这里不再另加一次。
         AccountTable.update(member.copy(password = PasswordHasher.hash(newPassword)))
         identityAdapter.onPasswordChanged(port.AccountPasswordChangedEvent(memberId = member.id))
@@ -362,7 +362,7 @@ class AccountAuthLogic(
 
     suspend fun socialAuthRedirect(socialType: String, redirectUri: String): String {
         val social = socialUserLogic
-            ?: throw BadRequestException("Social login not configured")
+            ?: throw HttpException(NetonErrorCode.SERVICE_UNAVAILABLE, E.SOCIAL_LOGIN_UNAVAILABLE)
         return social.getAuthRedirectUrl(socialType, redirectUri)
     }
 
@@ -374,7 +374,7 @@ class AccountAuthLogic(
         remoteIp: String? = null,
     ): AccountLoginResponse {
         val social = socialUserLogic
-            ?: throw BadRequestException("Social login not configured")
+            ?: throw HttpException(NetonErrorCode.SERVICE_UNAVAILABLE, E.SOCIAL_LOGIN_UNAVAILABLE)
 
         val socialUser = social.socialLogin(socialType, code, redirectUri, userType = 2)
 
@@ -401,17 +401,10 @@ class AccountAuthLogic(
             log.info("account.social.auto_register", mapOf("userId" to member.id, "socialType" to socialType))
         } else {
             member = AccountTable.get(socialUser.userId)
-                ?: throw NotFoundException("Bound member not found")
+                ?: throw NotFoundException(E.ACCOUNT_NOT_FOUND)
         }
 
-        // 🔴 白名单判断：只有 NORMAL 放行。
-        // 写成 `== DISABLED 就拒绝` 的话，新增状态（如 DELETED）会被默默放行。
-        if (member.status != model.AccountStatus.NORMAL) {
-            throw BadRequestException(
-                if (member.status == model.AccountStatus.DELETED) "Account is deleted"
-                else "Account is disabled"
-            )
-        }
+        requireUsable(member)
 
         recordSuccessfulLogin(member, remoteIp)
 
@@ -426,23 +419,27 @@ class AccountAuthLogic(
         if (scene == SmsScene.UPDATE_MOBILE) requireNotNull(actorId) { "update_mobile requires the signed-in account" }.toString() else null
 
     private fun codes(): logic.VerificationCodeService =
-        verificationCodes ?: throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.SERVICE_UNAVAILABLE, "VERIFICATION_UNAVAILABLE")
+        verificationCodes ?: throw HttpException(NetonErrorCode.SERVICE_UNAVAILABLE, E.VERIFICATION_UNAVAILABLE)
 
     /** 码按「账号域 + 用途 + 接收方」核验并消费，原子计错、猜错到上限作废（system 的 VerificationCodeService）。 */
     private suspend fun verifySmsCode(mobile: String, scene: SmsScene, code: String, actor: String? = null) {
         when (codes().verify(REALM, scene.purpose, logic.VerificationCodeService.Channel.SMS, mobile, code, actor)) {
             logic.VerificationCodeService.Result.OK -> Unit
-            logic.VerificationCodeService.Result.INVALID -> throw BadRequestException("Invalid SMS code")
-            logic.VerificationCodeService.Result.LOCKED -> throw BadRequestException("Too many wrong attempts, please request a new code")
-            logic.VerificationCodeService.Result.EXPIRED -> throw BadRequestException("SMS code expired or not sent")
+            logic.VerificationCodeService.Result.INVALID ->
+                throw BadRequestException(E.SMS_CODE_INVALID, listOf(ValidationError("smsCode", E.SMS_CODE_INVALID, E.SMS_CODE_INVALID)))
+            logic.VerificationCodeService.Result.LOCKED ->
+                throw BadRequestException(E.SMS_CODE_ATTEMPTS_EXCEEDED, listOf(ValidationError("smsCode", E.SMS_CODE_ATTEMPTS_EXCEEDED, E.SMS_CODE_ATTEMPTS_EXCEEDED)))
+            logic.VerificationCodeService.Result.EXPIRED ->
+                throw BadRequestException(E.SMS_CODE_EXPIRED, listOf(ValidationError("smsCode", E.SMS_CODE_EXPIRED, E.SMS_CODE_EXPIRED)))
         }
     }
 
     private suspend fun verifyEmailCode(email: String, purpose: String, code: String, actor: String? = null) {
         when (codes().verify(REALM, purpose, logic.VerificationCodeService.Channel.EMAIL, email, code, actor)) {
             logic.VerificationCodeService.Result.OK -> Unit
-            logic.VerificationCodeService.Result.LOCKED -> throw BadRequestException("Too many wrong attempts, please request a new code")
-            else -> throw BadRequestException("INVALID_EMAIL_CODE")
+            logic.VerificationCodeService.Result.LOCKED ->
+                throw BadRequestException(E.EMAIL_CODE_ATTEMPTS_EXCEEDED, listOf(ValidationError("code", E.EMAIL_CODE_ATTEMPTS_EXCEEDED, E.EMAIL_CODE_ATTEMPTS_EXCEEDED)))
+            else -> throw BadRequestException(E.INVALID_EMAIL_CODE, listOf(ValidationError("code", E.INVALID_EMAIL_CODE, E.INVALID_EMAIL_CODE)))
         }
     }
 
@@ -474,7 +471,7 @@ class AccountAuthLogic(
         )
         val hooks = extensions.registrationHooks()
         if (context.inviteCode != null && hooks.none { it.consumesInviteCode }) {
-            throw BadRequestException("INVITE_CODE_UNSUPPORTED")
+            throw BadRequestException(E.INVITE_CODE_UNSUPPORTED, listOf(ValidationError("inviteCode", E.INVITE_CODE_UNSUPPORTED, E.INVITE_CODE_UNSUPPORTED)))
         }
         for (hook in hooks) hook.validate(context)
         val account = buildMember()
@@ -488,25 +485,25 @@ class AccountAuthLogic(
         remoteIp: String? = null,
     ): AccountLoginResponse {
         if (request.mode != port.AccountAuthPolicy.MODE_USERNAME_PASSWORD) {
-            throw BadRequestException("UNSUPPORTED_REGISTER_MODE")
+            throw BadRequestException(E.UNSUPPORTED_REGISTER_MODE, listOf(ValidationError("mode", E.UNSUPPORTED_REGISTER_MODE, E.UNSUPPORTED_REGISTER_MODE)))
         }
         if (port.AccountAuthPolicy.MODE_USERNAME_PASSWORD !in authPolicy.registerModes) {
-            throw BadRequestException("REGISTER_MODE_DISABLED")
+            throw BadRequestException(E.REGISTER_MODE_DISABLED)
         }
         // username 规则 = AccountProfileLogic 同一真源(lowercase 归一 + 格式 + 保留字)
         val username = request.username.trim().lowercase()
         if (!AccountProfileLogic.USERNAME_REGEX.matches(username)) {
-            throw BadRequestException("INVALID_USERNAME_FORMAT")
+            throw BadRequestException(E.INVALID_USERNAME_FORMAT, listOf(ValidationError("username", E.INVALID_USERNAME_FORMAT, E.INVALID_USERNAME_FORMAT)))
         }
         if (username in AccountProfileLogic.USERNAME_RESERVED) {
-            throw BadRequestException("USERNAME_RESERVED")
+            throw BadRequestException(E.USERNAME_RESERVED, listOf(ValidationError("username", E.USERNAME_RESERVED, E.USERNAME_RESERVED)))
         }
         if (request.password.length < 8) {
-            throw BadRequestException("PASSWORD_TOO_SHORT")
+            throw BadRequestException(E.PASSWORD_TOO_SHORT, listOf(ValidationError("password", E.PASSWORD_TOO_SHORT, E.PASSWORD_TOO_SHORT)))
         }
         // nickname 不在注册期强制:空昵称由 complete_profile required-action 引导补全
         if (AccountTable.oneWhere { Account::username eq username } != null) {
-            throw BadRequestException("USERNAME_TAKEN")
+            throw HttpException(NetonErrorCode.RESOURCE_ALREADY_EXISTS, E.USERNAME_TAKEN, listOf(ValidationError("username", E.USERNAME_TAKEN, E.USERNAME_TAKEN)))
         }
         val member = registerNewUser(
             mode = port.AccountAuthPolicy.MODE_USERNAME_PASSWORD,
@@ -548,7 +545,7 @@ class AccountAuthLogic(
         val verification = PasswordHasher.verify(password, found?.password ?: dummyHash)
         if (found?.password == null || !verification.verified) {
             recordLoginFailure(normalized, remoteIp, found?.id)
-            throw neton.core.http.HttpException(neton.core.http.NetonErrorCode.INVALID_CREDENTIALS, "INVALID_CREDENTIALS")
+            throw HttpException(NetonErrorCode.INVALID_CREDENTIALS, E.INVALID_CREDENTIALS)
         }
         throttle.reset(REALM, normalized, remoteIp)
         var member: Account = found
@@ -556,13 +553,7 @@ class AccountAuthLogic(
             member = member.copy(password = PasswordHasher.hash(password))
             AccountTable.update(member)
         }
-        // 同上：白名单判断，新增状态不会漏。
-        if (member.status != model.AccountStatus.NORMAL) {
-            throw neton.core.http.HttpException(
-                neton.core.http.NetonErrorCode.USER_BANNED,
-                if (member.status == model.AccountStatus.DELETED) "ACCOUNT_DELETED" else "ACCOUNT_DISABLED",
-            )
-        }
+        requireUsable(member)
         recordSuccessfulLogin(member, remoteIp)
         log.info("account.login.username.success", mapOf("userId" to member.id))
         return buildResponse(member.id, device, remoteIp)

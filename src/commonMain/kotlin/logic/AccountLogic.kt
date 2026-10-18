@@ -1,5 +1,6 @@
 package logic
 
+import neton.core.http.NotFoundException
 import dto.PageResponse
 import model.Account
 import table.AccountTable
@@ -66,7 +67,7 @@ class AccountLogic(
      */
     suspend fun updatePassword(userId: Long, rawPassword: String) {
         val member = AccountTable.get(userId)
-            ?: throw IllegalArgumentException("Account not found: $userId")
+            ?: throw NotFoundException(AccountErrorCodes.ACCOUNT_NOT_FOUND)
         AccountTable.update(member.copy(password = PasswordHasher.hash(rawPassword)))
         log.info("Updated account password: userId=$userId")
     }

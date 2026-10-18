@@ -1,5 +1,6 @@
 package controller.admin.account.dto
 
+import logic.AccountErrorCodes
 import kotlinx.serialization.Serializable
 import neton.validation.annotations.Max
 import neton.validation.annotations.Min
@@ -37,7 +38,7 @@ data class UpdateAccountRequest(
     @property:Min(1)
     val id: Long,
 
-    @property:Pattern("^1[3-9]\\d{9}$")
+    @property:Pattern("^1[3-9]\\d{9}$", message = AccountErrorCodes.INVALID_MOBILE)
     val mobile: String? = null,
 
     @property:NotBlank

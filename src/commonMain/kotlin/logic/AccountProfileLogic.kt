@@ -6,6 +6,7 @@ import neton.core.http.BadRequestException
 import neton.core.http.HttpException
 import neton.core.http.NetonErrorCode
 import neton.core.http.NotFoundException
+import neton.core.http.ValidationError
 import neton.logging.Logger
 import logic.FileUploadLogic
 import port.AccountIdentityAdapter
@@ -33,7 +34,7 @@ class AccountProfileLogic(
     suspend fun updateNickname(uid: Long, nickname: String): Account {
         val trimmed = nickname.trim()
         if (trimmed.length !in 2..32) {
-            throw BadRequestException("INVALID_NICKNAME_LENGTH")
+            throw BadRequestException(AccountErrorCodes.INVALID_NICKNAME_LENGTH, listOf(ValidationError("nickname", AccountErrorCodes.INVALID_NICKNAME_LENGTH, AccountErrorCodes.INVALID_NICKNAME_LENGTH)))
         }
         val member = requireMember(uid)
         val updated = member.copy(nickname = trimmed)
@@ -59,15 +60,19 @@ class AccountProfileLogic(
     suspend fun bindMobileWithoutVerification(uid: Long, mobile: String): Account {
         val trimmed = mobile.trim()
         if (trimmed.isEmpty()) {
-            throw BadRequestException("INVALID_MOBILE")
+            throw BadRequestException(AccountErrorCodes.INVALID_MOBILE, listOf(ValidationError("mobile", AccountErrorCodes.INVALID_MOBILE, AccountErrorCodes.INVALID_MOBILE)))
         }
         val member = requireMember(uid)
         if (!member.mobile.isNullOrBlank()) {
-            throw BadRequestException("MOBILE_ALREADY_BOUND")
+            throw HttpException(NetonErrorCode.OPERATION_CONFLICT, AccountErrorCodes.MOBILE_ALREADY_BOUND)
         }
         val occupied = AccountTable.oneWhere { Account::mobile eq trimmed }
         if (occupied != null && occupied.id != uid) {
-            throw BadRequestException("MOBILE_ALREADY_TAKEN")
+            throw HttpException(
+                NetonErrorCode.RESOURCE_ALREADY_EXISTS,
+                AccountErrorCodes.MOBILE_ALREADY_TAKEN,
+                listOf(ValidationError("mobile", AccountErrorCodes.MOBILE_ALREADY_TAKEN, AccountErrorCodes.MOBILE_ALREADY_TAKEN)),
+            )
         }
         val updated = member.copy(mobile = trimmed)
         accountLogic.update(updated)
@@ -91,25 +96,23 @@ class AccountProfileLogic(
     suspend fun updateAvatar(uid: Long, fileId: String): Account {
         val trimmed = fileId.trim()
         if (trimmed.isEmpty()) {
-            throw BadRequestException("INVALID_AVATAR_FILE_ID")
+            throw BadRequestException(AccountErrorCodes.INVALID_AVATAR_FILE_ID, listOf(ValidationError("fileId", AccountErrorCodes.INVALID_AVATAR_FILE_ID, AccountErrorCodes.INVALID_AVATAR_FILE_ID)))
         }
         val record = appFileLogic.getByFileId(trimmed)
-            ?: throw BadRequestException("AVATAR_FILE_NOT_FOUND: $trimmed")
+            ?: throw BadRequestException(AccountErrorCodes.AVATAR_FILE_NOT_FOUND, listOf(ValidationError("fileId", AccountErrorCodes.AVATAR_FILE_NOT_FOUND, AccountErrorCodes.AVATAR_FILE_NOT_FOUND)))
 
         if (record.status != 1) {
-            throw BadRequestException("AVATAR_FILE_INACTIVE: $trimmed")
+            throw BadRequestException(AccountErrorCodes.AVATAR_FILE_INACTIVE, listOf(ValidationError("fileId", AccountErrorCodes.AVATAR_FILE_INACTIVE, AccountErrorCodes.AVATAR_FILE_INACTIVE)))
         }
         if (record.ownerUid != uid) {
             // 不暴露归属信息——直接 not-found 语义，避免泄露 fileId 存在性
-            throw BadRequestException("AVATAR_FILE_NOT_FOUND: $trimmed")
+            throw BadRequestException(AccountErrorCodes.AVATAR_FILE_NOT_FOUND, listOf(ValidationError("fileId", AccountErrorCodes.AVATAR_FILE_NOT_FOUND, AccountErrorCodes.AVATAR_FILE_NOT_FOUND)))
         }
         if (record.businessType != "member_avatar") {
-            throw BadRequestException(
-                "INVALID_AVATAR_BUSINESS_TYPE: expected member_avatar, got ${record.businessType}",
-            )
+            throw BadRequestException(AccountErrorCodes.INVALID_AVATAR_BUSINESS_TYPE, listOf(ValidationError("fileId", AccountErrorCodes.INVALID_AVATAR_BUSINESS_TYPE, AccountErrorCodes.INVALID_AVATAR_BUSINESS_TYPE)))
         }
         val avatarUrl = record.url
-            ?: throw BadRequestException("AVATAR_FILE_NO_URL: $trimmed")
+            ?: throw BadRequestException(AccountErrorCodes.AVATAR_FILE_NO_URL, listOf(ValidationError("fileId", AccountErrorCodes.AVATAR_FILE_NO_URL, AccountErrorCodes.AVATAR_FILE_NO_URL)))
 
         val member = requireMember(uid)
         val updated = member.copy(avatar = avatarUrl)
@@ -121,10 +124,10 @@ class AccountProfileLogic(
     suspend fun updateUsername(uid: Long, username: String): UsernameUpdateResult {
         val normalized = username.trim().lowercase()
         if (!USERNAME_REGEX.matches(normalized)) {
-            throw BadRequestException("INVALID_USERNAME_FORMAT")
+            throw BadRequestException(AccountErrorCodes.INVALID_USERNAME_FORMAT, listOf(ValidationError("username", AccountErrorCodes.INVALID_USERNAME_FORMAT, AccountErrorCodes.INVALID_USERNAME_FORMAT)))
         }
         if (normalized in USERNAME_RESERVED) {
-            throw BadRequestException("USERNAME_RESERVED")
+            throw BadRequestException(AccountErrorCodes.USERNAME_RESERVED, listOf(ValidationError("username", AccountErrorCodes.USERNAME_RESERVED, AccountErrorCodes.USERNAME_RESERVED)))
         }
 
         val member = requireMember(uid)
@@ -135,7 +138,8 @@ class AccountProfileLogic(
                 val retryAfterSecs = (USERNAME_RATE_LIMIT_MS - elapsed) / 1000
                 throw HttpException(
                     code = NetonErrorCode.RATE_LIMIT_EXCEEDED,
-                    message = "USERNAME_RATE_LIMITED retryAfterSecs=$retryAfterSecs",
+                    message = AccountErrorCodes.USERNAME_RATE_LIMITED,
+                    headers = mapOf("Retry-After" to retryAfterSecs.toString()),
                 )
             }
         }
@@ -158,8 +162,9 @@ class AccountProfileLogic(
             // 兜底归类为 USERNAME_TAKEN（DB 是真正守门）。
             if (isUniqueViolation(e, target = "username")) {
                 throw HttpException(
-                    code = NetonErrorCode.OPERATION_CONFLICT,
-                    message = "USERNAME_TAKEN",
+                    code = NetonErrorCode.RESOURCE_ALREADY_EXISTS,
+                    message = AccountErrorCodes.USERNAME_TAKEN,
+                    errors = listOf(ValidationError("username", AccountErrorCodes.USERNAME_TAKEN, AccountErrorCodes.USERNAME_TAKEN)),
                 )
             }
             throw e
@@ -175,7 +180,7 @@ class AccountProfileLogic(
     suspend fun updateBio(uid: Long, bio: String?): Account {
         val normalized = bio?.takeIf { it.isNotEmpty() }
         if (normalized != null && normalized.length > 200) {
-            throw BadRequestException("INVALID_BIO_LENGTH")
+            throw BadRequestException(AccountErrorCodes.INVALID_BIO_LENGTH, listOf(ValidationError("bio", AccountErrorCodes.INVALID_BIO_LENGTH, AccountErrorCodes.INVALID_BIO_LENGTH)))
         }
         val member = requireMember(uid)
         val updated = member.copy(bio = normalized)
@@ -186,7 +191,7 @@ class AccountProfileLogic(
 
     suspend fun updateGender(uid: Long, gender: Int): Account {
         if (gender !in GENDER_ALLOWED) {
-            throw BadRequestException("INVALID_GENDER")
+            throw BadRequestException(AccountErrorCodes.INVALID_GENDER, listOf(ValidationError("gender", AccountErrorCodes.INVALID_GENDER, AccountErrorCodes.INVALID_GENDER)))
         }
         val member = requireMember(uid)
         val updated = member.copy(gender = gender)
@@ -199,12 +204,12 @@ class AccountProfileLogic(
         val normalized = birthday?.trim()?.takeIf { it.isNotEmpty() }
         if (normalized != null) {
             if (!BIRTHDAY_REGEX.matches(normalized)) {
-                throw BadRequestException("INVALID_BIRTHDAY_FORMAT")
+                throw BadRequestException(AccountErrorCodes.INVALID_BIRTHDAY_FORMAT, listOf(ValidationError("birthday", AccountErrorCodes.INVALID_BIRTHDAY_FORMAT, AccountErrorCodes.INVALID_BIRTHDAY_FORMAT)))
             }
             val year = normalized.substring(0, 4).toInt()
             val currentYear = currentYear()
             if (year < 1900 || year > currentYear) {
-                throw BadRequestException("INVALID_BIRTHDAY_FORMAT")
+                throw BadRequestException(AccountErrorCodes.INVALID_BIRTHDAY_FORMAT, listOf(ValidationError("birthday", AccountErrorCodes.INVALID_BIRTHDAY_FORMAT, AccountErrorCodes.INVALID_BIRTHDAY_FORMAT)))
             }
         }
         val member = requireMember(uid)
@@ -215,7 +220,7 @@ class AccountProfileLogic(
     }
 
     private suspend fun requireMember(uid: Long): Account =
-        accountLogic.get(uid) ?: throw NotFoundException("MEMBER_NOT_FOUND: $uid")
+        accountLogic.get(uid) ?: throw NotFoundException(AccountErrorCodes.ACCOUNT_NOT_FOUND)
 
     private suspend fun publishProfileChanged(after: Account, changedFields: Set<String>) {
         identityAdapter?.onProfileChanged(

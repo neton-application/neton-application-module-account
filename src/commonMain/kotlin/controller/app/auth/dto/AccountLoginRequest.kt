@@ -1,5 +1,6 @@
 package controller.app.auth.dto
 
+import logic.AccountErrorCodes
 import controller.admin.auth.dto.LoginDeviceInfo
 import kotlinx.serialization.Serializable
 import neton.validation.annotations.NotBlank
@@ -16,7 +17,7 @@ import neton.validation.annotations.Size
 @Serializable
 data class AccountLoginRequest(
     @property:NotBlank
-    @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
+    @property:Pattern(regex = E164_REGEX, message = AccountErrorCodes.INVALID_MOBILE)
     val mobile: String,
 
     @property:Size(min = 8, max = 128)

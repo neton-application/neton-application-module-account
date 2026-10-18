@@ -1,5 +1,9 @@
 package controller.admin.account
 
+import logic.AccountErrorCodes
+import neton.core.http.ValidationError
+import neton.core.http.BadRequestException
+import neton.core.http.NotFoundException
 import controller.admin.account.dto.FillBotNicknamesResponse
 import controller.admin.account.dto.AccountVO
 import controller.admin.account.dto.UpdateAccountRequest
@@ -31,7 +35,7 @@ class AccountUserController(
     @Permission("account:user:update")
     suspend fun update(@Body request: UpdateAccountRequest) {
         val existing = accountLogic.get(request.id)
-            ?: throw IllegalArgumentException("Account not found: ${request.id}")
+            ?: throw NotFoundException(AccountErrorCodes.ACCOUNT_NOT_FOUND)
         accountLogic.update(
             existing.copy(
                 mobile = request.mobile,
@@ -53,7 +57,10 @@ class AccountUserController(
         // @Size 之外再显式挡一次：空串/纯空格在部分校验实现下会漏过（历史坑）。
         val password = req.password.trim()
         if (password.length < 8) {
-            throw IllegalArgumentException("Password must be at least 8 characters")
+            throw BadRequestException(
+                AccountErrorCodes.PASSWORD_TOO_SHORT,
+                listOf(ValidationError("password", AccountErrorCodes.PASSWORD_TOO_SHORT, AccountErrorCodes.PASSWORD_TOO_SHORT)),
+            )
         }
         accountLogic.updatePassword(req.id, password)
     }

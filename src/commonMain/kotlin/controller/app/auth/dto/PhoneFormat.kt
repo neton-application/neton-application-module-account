@@ -9,4 +9,3 @@ package controller.app.auth.dto
  * 客户端登录 / 发 SMS / 修改手机号一律用此格式。地址簿等业务字段（收货人电话）不受此约束。
  */
 internal const val E164_REGEX = "^\\+[1-9]\\d{7,14}$"
-internal const val E164_MESSAGE = "请携带正确的国际区号（E.164 格式，如 +8615000000000）"

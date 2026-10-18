@@ -97,7 +97,7 @@ class AccountPreferenceDbTest {
     private suspend fun conflict(block: suspend () -> Unit) {
         val e = assertFailsWith<HttpException> { block() }
         assertEquals(NetonErrorCode.OPERATION_CONFLICT, e.code)
-        assertEquals(AccountPreferenceLogic.VERSION_CONFLICT, e.message)
+        assertEquals(AccountErrorCodes.PREFERENCE_VERSION_CONFLICT, e.message)
     }
 
     @Test
@@ -168,7 +168,7 @@ class AccountPreferenceDbTest {
         creates.filter { it.isFailure }.forEach {
             val e = it.exceptionOrNull() as HttpException
             assertEquals(NetonErrorCode.PARAM_OUT_OF_RANGE, e.code)
-            assertEquals(AccountPreferenceLogic.NAMESPACE_LIMIT, e.message)
+            assertEquals(AccountErrorCodes.PREFERENCE_NAMESPACE_LIMIT_EXCEEDED, e.message)
         }
         assertEquals(3, logic.list(1).size)
 
@@ -177,7 +177,7 @@ class AccountPreferenceDbTest {
             (1..6).map { i -> async { runCatching { logic.put(2, "app.same", JsonPrimitive(i), null) } } }.awaitAll()
         }
         assertEquals(1, other.count { it.isSuccess })
-        other.filter { it.isFailure }.forEach { assertEquals(AccountPreferenceLogic.VERSION_CONFLICT, it.exceptionOrNull()?.message) }
+        other.filter { it.isFailure }.forEach { assertEquals(AccountErrorCodes.PREFERENCE_VERSION_CONFLICT, it.exceptionOrNull()?.message) }
 
         // 已存在的命名空间在满额时仍可更新。
         assertEquals(3, logic.put(1, "app.counter", JsonPrimitive("x"), 2).version)

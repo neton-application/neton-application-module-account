@@ -1,6 +1,6 @@
 package controller.app.account.dto
 
-import controller.app.auth.dto.E164_MESSAGE
+import logic.AccountErrorCodes
 import controller.app.auth.dto.E164_REGEX
 import kotlinx.serialization.Serializable
 import neton.validation.annotations.NotBlank
@@ -89,7 +89,7 @@ data class ResetPasswordByEmailRequest(
 @Serializable
 data class UpdateMobileRequest(
     @property:NotBlank
-    @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
+    @property:Pattern(regex = E164_REGEX, message = AccountErrorCodes.INVALID_MOBILE)
     val mobile: String,
 
     @property:NotBlank
@@ -115,7 +115,7 @@ data class UpdatePasswordRequest(
 @Serializable
 data class ResetPasswordBySmsRequest(
     @property:NotBlank
-    @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
+    @property:Pattern(regex = E164_REGEX, message = AccountErrorCodes.INVALID_MOBILE)
     val mobile: String,
 
     @property:NotBlank

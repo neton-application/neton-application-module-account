@@ -1,5 +1,6 @@
 package impl
 
+import logic.AccountErrorCodes
 import model.Account
 import model.AccountStatus
 import security.SessionRevocation
@@ -123,36 +124,36 @@ class BuiltinAccountIdentityAdapter(
         val verified = try {
             jwt.verifyToken(command.refreshToken)
         } catch (e: Exception) {
-            throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN")
+            throw HttpException(NetonErrorCode.INVALID_TOKEN, AccountErrorCodes.INVALID_REFRESH_TOKEN)
         }
         // 管理员令牌和本域令牌用同一把密钥签，域不对就不是给这里用的（评审 R01）。
         if (verified.claimString(TokenRealm.CLAIM) != REALM) {
-            throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN")
+            throw HttpException(NetonErrorCode.INVALID_TOKEN, AccountErrorCodes.INVALID_REFRESH_TOKEN)
         }
         if (verified.claimString(TokenRealm.TYPE_CLAIM) != TokenRealm.TYPE_REFRESH) {
-            throw HttpException(NetonErrorCode.INVALID_TOKEN, "NOT_A_REFRESH_TOKEN")
+            throw HttpException(NetonErrorCode.INVALID_TOKEN, AccountErrorCodes.NOT_A_REFRESH_TOKEN)
         }
         val memberId = verified.claimString("sub")?.toLongOrNull()
-            ?: throw HttpException(NetonErrorCode.INVALID_TOKEN, "INVALID_REFRESH_TOKEN_SUBJECT")
+            ?: throw HttpException(NetonErrorCode.INVALID_TOKEN, AccountErrorCodes.INVALID_REFRESH_TOKEN_SUBJECT)
         val account = AccountTable.get(memberId)
         val tokenSid = verified.claimString("sid")?.toLongOrNull()
         // 被禁用、已注销的账号同样不能续期：缺这一条时，禁用只挡住了登录，已登录的人照样续命一年。
         if (account == null || account.status != AccountStatus.NORMAL || tokenSid != account.sessionVersion) {
-            throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
+            throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, AccountErrorCodes.REFRESH_TOKEN_EXPIRED)
         }
         val sessionVersion = account.sessionVersion
         val sessionId = verified.claimString(SessionRevocation.SESSION_CLAIM)
-            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
+            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, AccountErrorCodes.REFRESH_TOKEN_EXPIRED)
         if (revocation.isRevoked(REALM, sessionId)) {
-            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, "REFRESH_TOKEN_REVOKED")
+            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, AccountErrorCodes.REFRESH_TOKEN_REVOKED)
         }
         // 刷新令牌只能换一次：并发窗口外的重复使用说明它被复制了，整个会话作废（评审 R04）。
         val jti = verified.claimString(SessionRevocation.TOKEN_ID_CLAIM)
-            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, "REFRESH_TOKEN_EXPIRED")
+            ?: throw HttpException(NetonErrorCode.REFRESH_TOKEN_EXPIRED, AccountErrorCodes.REFRESH_TOKEN_EXPIRED)
         val nowSeconds = Clock.System.now().toEpochMilliseconds() / 1000
         if (revocation.claimRefresh(REALM, jti, REFRESH_TTL_SECONDS, nowSeconds) == SessionRevocation.RefreshUse.REUSED) {
             revocation.revokeSession(REALM, sessionId, REFRESH_TTL_SECONDS)
-            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, "REFRESH_TOKEN_REVOKED")
+            throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, AccountErrorCodes.REFRESH_TOKEN_REVOKED)
         }
         val deviceId = command.deviceId?.takeIf { it.isNotBlank() } ?: mintDeviceId()
         return buildBundle(memberId, deviceId, sessionVersion, deviceCreated = false, sessionId = sessionId)

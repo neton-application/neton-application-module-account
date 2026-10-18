@@ -1,5 +1,6 @@
 package controller.app.account
 
+import logic.AccountErrorCodes
 import controller.app.account.dto.AccountSelfVO
 import controller.app.account.dto.toSelfVO
 
@@ -24,7 +25,10 @@ import logic.AccountLogic
 import logic.AccountProfileLogic
 import neton.core.annotations.*
 import neton.core.http.BadRequestException
+import neton.core.http.HttpException
+import neton.core.http.NetonErrorCode
 import neton.core.http.NotFoundException
+import neton.core.http.ValidationError
 import neton.core.interfaces.Identity
 import neton.security.password.PasswordHasher
 import neton.validation.annotations.Min
@@ -119,14 +123,14 @@ class AccountSelfController(
     /** 绑定 / 换绑手机号：先用 scene=2 往新号码发码，再带码提交。 */
     @Put("/update-mobile")
     @FreshAuth
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = "Too many attempts, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = AccountErrorCodes.ATTEMPTS_RATE_LIMITED)
     suspend fun updateMobile(identity: Identity, @Body request: UpdateMobileRequest) {
         accountAuthLogic.changeMobile(identity.id.toLong(), request.mobile, request.smsCode)
     }
 
     /** 绑定邮箱：先发码（登录态），再带码绑定。 */
     @Post("/send-email-code")
-    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Email code sending limit exceeded, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.EMAIL_SEND_RATE_LIMITED)
     suspend fun sendEmailCode(identity: Identity, @Body request: SendEmailCodeRequest) {
         accountAuthLogic.sendEmailCode(request.email, "bind_email", identity.id.toLong())
     }
@@ -134,7 +138,7 @@ class AccountSelfController(
     /** 绑定 / 换绑邮箱：先发码到新邮箱，再带码提交。 */
     @Put("/bind-email")
     @FreshAuth
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = "Too many attempts, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.USER, message = AccountErrorCodes.ATTEMPTS_RATE_LIMITED)
     suspend fun bindEmail(identity: Identity, @Body request: BindEmailRequest) {
         accountAuthLogic.bindEmail(identity.id.toLong(), request.email, request.code)
     }
@@ -144,14 +148,25 @@ class AccountSelfController(
     suspend fun updatePassword(identity: Identity, @Body request: UpdatePasswordRequest) {
         val userId = identity.id.toLong()
         val member = accountLogic.get(userId)
-            ?: throw NotFoundException("Account not found: $userId")
+            ?: throw NotFoundException(AccountErrorCodes.ACCOUNT_NOT_FOUND)
 
         // 已设过密码：必须带旧密码且正确；没设过（短信 / 社交注册）直接设置
         if (!member.password.isNullOrEmpty()) {
-            if (request.oldPassword.isEmpty()) throw BadRequestException("请输入当前密码")
+            if (request.oldPassword.isEmpty()) {
+                throw HttpException(
+                    NetonErrorCode.MISSING_REQUIRED_PARAM,
+                    AccountErrorCodes.OLD_PASSWORD_REQUIRED,
+                    listOf(ValidationError("oldPassword", AccountErrorCodes.OLD_PASSWORD_REQUIRED, AccountErrorCodes.OLD_PASSWORD_REQUIRED)),
+                )
+            }
             val verification = PasswordHasher.verify(request.oldPassword, member.password)
             if (!verification.verified) {
-                throw BadRequestException("当前密码不正确")
+                // 与登录同一个凭据错误码（spec account-errors）：客户端只认 body.code=10011，不当成会话失效。
+                throw HttpException(
+                    NetonErrorCode.INVALID_CREDENTIALS,
+                    AccountErrorCodes.INVALID_CREDENTIALS,
+                    listOf(ValidationError("oldPassword", AccountErrorCodes.INVALID_CREDENTIALS, AccountErrorCodes.INVALID_CREDENTIALS)),
+                )
             }
         }
 
@@ -168,7 +183,7 @@ class AccountSelfController(
      */
     @Put("/reset-password")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 300, maxRequests = 5, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.ATTEMPTS_RATE_LIMITED)
     suspend fun resetPassword(@Body request: ResetPasswordBySmsRequest) {
         accountAuthLogic.resetPasswordBySms(request.mobile, request.smsCode, request.newPassword)
     }
@@ -180,15 +195,15 @@ class AccountSelfController(
      * - 修改密码：[mobile] 可省略，从当前登录用户的手机号自动获取。
      */
     @Post("/send-sms-code")
-    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "SMS code sending limit exceeded, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.SMS_SEND_RATE_LIMITED)
     suspend fun sendSmsCode(identity: Identity, @Body request: AuthedSendSmsCodeRequest) {
         val scene = try {
             SmsScene.fromScene(request.scene)
         } catch (_: IllegalArgumentException) {
-            throw BadRequestException("Invalid scene: ${request.scene}")
+            throw BadRequestException(AccountErrorCodes.INVALID_SCENE, listOf(ValidationError("scene", AccountErrorCodes.INVALID_SCENE, AccountErrorCodes.INVALID_SCENE)))
         }
         if (scene !in setOf(SmsScene.UPDATE_MOBILE, SmsScene.UPDATE_PASSWORD)) {
-            throw BadRequestException("Scene ${request.scene} is not allowed here, use /auth/send-sms-code for login/reset-password")
+            throw BadRequestException(AccountErrorCodes.SCENE_NOT_ALLOWED, listOf(ValidationError("scene", AccountErrorCodes.SCENE_NOT_ALLOWED, AccountErrorCodes.SCENE_NOT_ALLOWED)))
         }
 
         val userId = identity.id.toLong()
@@ -197,14 +212,14 @@ class AccountSelfController(
             SmsScene.UPDATE_PASSWORD -> {
                 // 修改密码：手机号来自登录用户自己的档案，忽略请求中的 mobile
                 accountLogic.get(userId)?.mobile
-                    ?: throw BadRequestException("No mobile bound to current account")
+                    ?: throw BadRequestException(AccountErrorCodes.MOBILE_NOT_BOUND)
             }
             SmsScene.UPDATE_MOBILE -> {
                 // 修改手机：手机号为新号，由请求提供（必须 E.164）
                 request.mobile?.takeIf { it.matches(Regex(controller.app.auth.dto.E164_REGEX)) }
-                    ?: throw BadRequestException(controller.app.auth.dto.E164_MESSAGE)
+                    ?: throw BadRequestException(AccountErrorCodes.INVALID_MOBILE, listOf(ValidationError("mobile", AccountErrorCodes.INVALID_MOBILE, AccountErrorCodes.INVALID_MOBILE)))
             }
-            else -> throw BadRequestException("Unexpected scene: $scene")
+            else -> throw BadRequestException(AccountErrorCodes.SCENE_NOT_ALLOWED, listOf(ValidationError("scene", AccountErrorCodes.SCENE_NOT_ALLOWED, AccountErrorCodes.SCENE_NOT_ALLOWED)))
         }
 
         accountAuthLogic.sendSmsCode(mobile, scene, userId)

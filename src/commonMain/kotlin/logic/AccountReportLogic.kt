@@ -6,6 +6,9 @@ import enums.ReportTargetType
 import model.Report
 import table.ReportTable
 import neton.core.http.BadRequestException
+import neton.core.http.HttpException
+import neton.core.http.NetonErrorCode
+import neton.core.http.ValidationError
 import neton.logging.Logger
 
 /**
@@ -25,18 +28,22 @@ class AccountReportLogic(
     suspend fun submit(reporterUid: Long, request: SubmitReportRequest): Long {
         val targetType = request.targetType.trim()
         if (!ReportTargetType.isValid(targetType)) {
-            throw BadRequestException("Invalid report target type: ${request.targetType}")
+            throw BadRequestException(AccountErrorCodes.INVALID_REPORT_TARGET_TYPE, listOf(ValidationError("targetType", AccountErrorCodes.INVALID_REPORT_TARGET_TYPE, AccountErrorCodes.INVALID_REPORT_TARGET_TYPE)))
         }
         val targetId = request.targetId.trim()
         if (targetId.isEmpty()) {
-            throw BadRequestException("Report target id is empty")
+            throw HttpException(
+                NetonErrorCode.MISSING_REQUIRED_PARAM,
+                AccountErrorCodes.REPORT_TARGET_ID_REQUIRED,
+                listOf(ValidationError("targetId", AccountErrorCodes.REPORT_TARGET_ID_REQUIRED, AccountErrorCodes.REPORT_TARGET_ID_REQUIRED)),
+            )
         }
         if (!ReportReason.isValid(request.reason)) {
-            throw BadRequestException("Invalid report reason: ${request.reason}")
+            throw BadRequestException(AccountErrorCodes.INVALID_REPORT_REASON, listOf(ValidationError("reason", AccountErrorCodes.INVALID_REPORT_REASON, AccountErrorCodes.INVALID_REPORT_REASON)))
         }
         val description = request.description?.trim()?.takeIf { it.isNotEmpty() }
         if (description != null && description.length > MAX_DESCRIPTION) {
-            throw BadRequestException("Report description too long (max $MAX_DESCRIPTION)")
+            throw BadRequestException(AccountErrorCodes.REPORT_DESCRIPTION_TOO_LONG, listOf(ValidationError("description", AccountErrorCodes.REPORT_DESCRIPTION_TOO_LONG, AccountErrorCodes.REPORT_DESCRIPTION_TOO_LONG)))
         }
 
         val id = ReportTable.insert(

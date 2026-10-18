@@ -57,20 +57,20 @@ class AccountPreferenceLogicTest {
     fun `rejects malformed namespaces before touching the database`() = runBlocking {
         listOf("", "App", "1app", "app.", ".app", "app..x", "app/x", "app x", "app.Channels", "x".repeat(65), "中文").forEach { ns ->
             val e = assertFailsWith<BadRequestException>(ns) { logic.get(1, ns) }
-            assertEquals(AccountPreferenceLogic.INVALID_NAMESPACE, e.message)
+            assertEquals(AccountErrorCodes.INVALID_PREFERENCE_NAMESPACE, e.message)
         }
     }
 
     @Test
     fun `null value is rejected - deletion goes through DELETE`() = runBlocking {
-        assertEquals(AccountPreferenceLogic.VALUE_REQUIRED, assertFailsWith<BadRequestException> { logic.put(1, "app.x", null, null) }.message)
-        assertEquals(AccountPreferenceLogic.VALUE_REQUIRED, assertFailsWith<BadRequestException> { logic.put(1, "app.x", JsonNull, null) }.message)
+        assertEquals(AccountErrorCodes.PREFERENCE_VALUE_REQUIRED, assertFailsWith<BadRequestException> { logic.put(1, "app.x", null, null) }.message)
+        assertEquals(AccountErrorCodes.PREFERENCE_VALUE_REQUIRED, assertFailsWith<BadRequestException> { logic.put(1, "app.x", JsonNull, null) }.message)
     }
 
     @Test
     fun `negative versions are rejected`() = runBlocking {
-        assertEquals(AccountPreferenceLogic.INVALID_VERSION, assertFailsWith<BadRequestException> { logic.put(1, "app.x", JsonPrimitive(1), -1) }.message)
-        assertEquals(AccountPreferenceLogic.INVALID_VERSION, assertFailsWith<BadRequestException> { logic.delete(1, "app.x", 0) }.message)
+        assertEquals(AccountErrorCodes.INVALID_PREFERENCE_VERSION, assertFailsWith<BadRequestException> { logic.put(1, "app.x", JsonPrimitive(1), -1) }.message)
+        assertEquals(AccountErrorCodes.INVALID_PREFERENCE_VERSION, assertFailsWith<BadRequestException> { logic.delete(1, "app.x", 0) }.message)
     }
 
     @Test
@@ -79,6 +79,6 @@ class AccountPreferenceLogicTest {
         val tooBig = buildJsonObject { put("k", "汉".repeat(9)) }
         val e = assertFailsWith<HttpException> { logic.put(1, "app.x", tooBig, null) }
         assertEquals(NetonErrorCode.PAYLOAD_TOO_LARGE, e.code)
-        assertEquals(AccountPreferenceLogic.VALUE_TOO_LARGE, e.message)
+        assertEquals(AccountErrorCodes.PREFERENCE_VALUE_TOO_LARGE, e.message)
     }
 }

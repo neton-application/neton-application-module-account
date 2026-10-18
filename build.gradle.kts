@@ -65,6 +65,12 @@ kotlin {
     }
 }
 
+// 错误 message 守卫（套件共享夹具，只进测试源集，不随生产发布）。
+kotlin.sourceSets.named("macosArm64Test") { kotlin.srcDir("../neton-application-contract/src/testFixtures/kotlin") }
+tasks.withType<org.jetbrains.kotlin.gradle.targets.native.tasks.KotlinNativeTest>().configureEach {
+    environment("NETON_MODULE_DIR", projectDir.absolutePath)
+}
+
 dependencies {
     add("kspMacosArm64", "com.netonstream:neton-ksp")
     add("kspLinuxX64", "com.netonstream:neton-ksp")

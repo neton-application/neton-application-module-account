@@ -6,6 +6,7 @@ import kotlinx.serialization.json.JsonNull
 import neton.core.http.BadRequestException
 import neton.core.http.HttpException
 import neton.core.http.NetonErrorCode
+import neton.core.http.ValidationError
 import neton.database.api.DbContext
 import neton.database.api.Row
 import neton.logging.Logger
@@ -18,7 +19,7 @@ import kotlin.time.Clock
  * - 命名空间：小写点分段，见 [NAMESPACE_REGEX]，长度上限 [Limits.maxNamespaceLength]。
  * - 值：任意非 null 的 JSON，按紧凑编码后的 UTF-8 字节数限额 [Limits.maxValueBytes]。
  * - 版本：不存在时为 0；创建后为 1，每次写入 +1。写入必须带上「我看到的版本」，
- *   对不上就 409 [VERSION_CONFLICT]，客户端重新读取后合并再写，不会悄悄覆盖另一端的修改。
+ *   对不上就 409 [AccountErrorCodes.PREFERENCE_VERSION_CONFLICT]，客户端重新读取后合并再写，不会悄悄覆盖另一端的修改。
  */
 class AccountPreferenceLogic(
     private val log: Logger,
@@ -57,13 +58,6 @@ class AccountPreferenceLogic(
     companion object {
         val NAMESPACE_REGEX = Regex("^[a-z][a-z0-9_-]*(\\.[a-z0-9_-]+)*$")
 
-        const val INVALID_NAMESPACE = "INVALID_PREFERENCE_NAMESPACE"
-        const val VALUE_REQUIRED = "PREFERENCE_VALUE_REQUIRED"
-        const val INVALID_VERSION = "INVALID_PREFERENCE_VERSION"
-        const val VALUE_TOO_LARGE = "PREFERENCE_VALUE_TOO_LARGE"
-        const val NAMESPACE_LIMIT = "PREFERENCE_NAMESPACE_LIMIT_EXCEEDED"
-        const val VERSION_CONFLICT = "PREFERENCE_VERSION_CONFLICT"
-
         private val json = Json
 
         /** 同一用户的「新建命名空间」串行化用的事务级咨询锁前缀，避免并发创建越过数量上限。 */
@@ -72,7 +66,7 @@ class AccountPreferenceLogic(
 
     fun requireNamespace(raw: String): String {
         if (raw.isEmpty() || raw.length > limits.maxNamespaceLength || !NAMESPACE_REGEX.matches(raw)) {
-            throw BadRequestException(INVALID_NAMESPACE)
+            throw BadRequestException(AccountErrorCodes.INVALID_PREFERENCE_NAMESPACE, listOf(ValidationError("namespace", AccountErrorCodes.INVALID_PREFERENCE_NAMESPACE, AccountErrorCodes.INVALID_PREFERENCE_NAMESPACE)))
         }
         return raw
     }
@@ -97,20 +91,20 @@ class AccountPreferenceLogic(
 
     /**
      * 写入。[expectedVersion] 为 null 或 0 表示「我认为它还不存在」，只创建；大于 0 时只在当前版本
-     * 正好相等时覆盖。两种情况对不上都是 409 [VERSION_CONFLICT]。
+     * 正好相等时覆盖。两种情况对不上都是 409 [AccountErrorCodes.PREFERENCE_VERSION_CONFLICT]。
      */
     suspend fun put(userId: Long, rawNamespace: String, value: JsonElement?, expectedVersion: Long?): Preference {
         val namespace = requireNamespace(rawNamespace)
-        if (value == null || value is JsonNull) throw BadRequestException(VALUE_REQUIRED)
+        if (value == null || value is JsonNull) throw BadRequestException(AccountErrorCodes.PREFERENCE_VALUE_REQUIRED, listOf(ValidationError("value", AccountErrorCodes.PREFERENCE_VALUE_REQUIRED, AccountErrorCodes.PREFERENCE_VALUE_REQUIRED)))
         val expected = expectedVersion ?: 0L
-        if (expected < 0) throw BadRequestException(INVALID_VERSION)
+        if (expected < 0) throw BadRequestException(AccountErrorCodes.INVALID_PREFERENCE_VERSION, listOf(ValidationError("version", AccountErrorCodes.INVALID_PREFERENCE_VERSION, AccountErrorCodes.INVALID_PREFERENCE_VERSION)))
         val encoded = json.encodeToString(JsonElement.serializer(), value)
         if (encoded.encodeToByteArray().size > limits.maxValueBytes) {
-            throw HttpException(NetonErrorCode.PAYLOAD_TOO_LARGE, VALUE_TOO_LARGE)
+            throw HttpException(NetonErrorCode.PAYLOAD_TOO_LARGE, AccountErrorCodes.PREFERENCE_VALUE_TOO_LARGE)
         }
         val now = clock()
         val row = (if (expected == 0L) create(userId, namespace, encoded, now) else update(userId, namespace, encoded, expected, now))
-            ?: throw HttpException(NetonErrorCode.OPERATION_CONFLICT, VERSION_CONFLICT)
+            ?: throw HttpException(NetonErrorCode.OPERATION_CONFLICT, AccountErrorCodes.PREFERENCE_VERSION_CONFLICT)
         return Preference(namespace, value, row.long("version"), row.long("updated_at"))
     }
 
@@ -127,12 +121,12 @@ class AccountPreferenceLogic(
             )
             return
         }
-        if (expectedVersion <= 0) throw BadRequestException(INVALID_VERSION)
+        if (expectedVersion <= 0) throw BadRequestException(AccountErrorCodes.INVALID_PREFERENCE_VERSION, listOf(ValidationError("version", AccountErrorCodes.INVALID_PREFERENCE_VERSION, AccountErrorCodes.INVALID_PREFERENCE_VERSION)))
         val deleted = db.execute(
             "DELETE FROM account_preferences WHERE user_id = :u AND namespace = :ns AND version = :v",
             mapOf("u" to userId, "ns" to namespace, "v" to expectedVersion),
         )
-        if (deleted == 0L) throw HttpException(NetonErrorCode.OPERATION_CONFLICT, VERSION_CONFLICT)
+        if (deleted == 0L) throw HttpException(NetonErrorCode.OPERATION_CONFLICT, AccountErrorCodes.PREFERENCE_VERSION_CONFLICT)
     }
 
     /** 账号注销时清掉该用户的全部偏好。 */
@@ -158,7 +152,7 @@ class AccountPreferenceLogic(
         ).isNotEmpty()
         if (exists) return@transaction null
         if (count >= limits.maxNamespacesPerUser) {
-            throw HttpException(NetonErrorCode.PARAM_OUT_OF_RANGE, NAMESPACE_LIMIT)
+            throw HttpException(NetonErrorCode.PARAM_OUT_OF_RANGE, AccountErrorCodes.PREFERENCE_NAMESPACE_LIMIT_EXCEEDED)
         }
         fetchAll(
             """
@@ -186,6 +180,6 @@ class AccountPreferenceLogic(
         runCatching { json.parseToJsonElement(text) }.getOrElse { e ->
             // 只有经过 put 校验的 JSON 才会落库；读不出来说明库被绕过写坏了，不能当作「不存在」吞掉。
             log.error("account.preferences.corrupt", mapOf("userId" to userId, "namespace" to namespace), cause = e)
-            throw HttpException(NetonErrorCode.DATABASE_ERROR, "PREFERENCE_CORRUPT")
+            throw HttpException(NetonErrorCode.DATABASE_ERROR, AccountErrorCodes.PREFERENCE_CORRUPT)
         }
 }

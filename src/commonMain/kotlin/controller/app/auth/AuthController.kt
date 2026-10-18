@@ -1,9 +1,9 @@
 package controller.app.auth
 
+import logic.AccountErrorCodes
 import logic.AccountAuthLogic
 import controller.app.auth.dto.AccountRegisterRequest
 import controller.app.auth.dto.UsernameLoginRequest
-import controller.app.auth.dto.E164_MESSAGE
 import controller.app.auth.dto.E164_REGEX
 import controller.app.auth.dto.AccountLoginRequest
 import controller.app.auth.dto.AccountLoginResponse
@@ -14,6 +14,7 @@ import enums.SmsScene
 import neton.core.annotations.*
 import neton.core.http.BadRequestException
 import neton.core.http.HttpRequest
+import neton.core.http.ValidationError
 import neton.validation.annotations.Min
 import neton.validation.annotations.NotBlank
 import neton.validation.annotations.Pattern
@@ -32,7 +33,7 @@ data class AccountRefreshTokenRequest(
 @Serializable
 data class AccountSendSmsCodeRequest(
     @property:NotBlank
-    @property:Pattern(regex = E164_REGEX, message = E164_MESSAGE)
+    @property:Pattern(regex = E164_REGEX, message = AccountErrorCodes.INVALID_MOBILE)
     val mobile: String,
 
     @property:Min(1)
@@ -51,7 +52,7 @@ class AuthController(
 
     @Post("/login")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Login attempts exceeded, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.LOGIN_RATE_LIMITED)
     suspend fun login(@Body request: AccountLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
         return accountAuthLogic.login(request, httpRequest.clientIp())
     }
@@ -59,7 +60,7 @@ class AuthController(
     /** 通用注册入口(MEMBER_INVITE_CODE §5.1):v1 = USERNAME_PASSWORD;PHONE_SMS 走 sms-login。 */
     @Post("/register")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 3600, maxRequests = 10, scope = RateLimitScope.IP, message = "Registration attempts exceeded, please try again later")
+    @RateLimit(windowSeconds = 3600, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.REGISTER_RATE_LIMITED)
     suspend fun register(@Body request: AccountRegisterRequest, httpRequest: HttpRequest): AccountLoginResponse {
         return accountAuthLogic.register(request, httpRequest.clientIp())
     }
@@ -67,7 +68,7 @@ class AuthController(
     /** 账号密码登录(USERNAME_PASSWORD 注册的用户)。 */
     @Post("/login-username")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Login attempts exceeded, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.LOGIN_RATE_LIMITED)
     suspend fun loginUsername(@Body request: UsernameLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
         return accountAuthLogic.usernameLogin(
             request.username,
@@ -79,7 +80,7 @@ class AuthController(
 
     @Post("/sms-login")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "SMS login attempts exceeded, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.LOGIN_RATE_LIMITED)
     suspend fun smsLogin(@Body request: AccountLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
         return accountAuthLogic.smsLogin(request, httpRequest.clientIp())
     }
@@ -112,7 +113,7 @@ class AuthController(
 
     @Post("/refresh-token")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 60, maxRequests = 30, scope = RateLimitScope.IP, message = "Too many refresh attempts, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 30, scope = RateLimitScope.IP, message = AccountErrorCodes.REFRESH_RATE_LIMITED)
     suspend fun refreshToken(@Body request: AccountRefreshTokenRequest): AccountLoginResponse {
         return accountAuthLogic.refreshToken(request.refreshToken, request.deviceId)
     }
@@ -123,15 +124,15 @@ class AuthController(
      */
     @Post("/send-sms-code")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "SMS code sending limit exceeded, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.SMS_SEND_RATE_LIMITED)
     suspend fun sendSmsCode(@Body request: AccountSendSmsCodeRequest) {
         val scene = try {
             SmsScene.fromScene(request.scene)
         } catch (_: IllegalArgumentException) {
-            throw BadRequestException("Invalid scene: ${request.scene}")
+            throw BadRequestException(AccountErrorCodes.INVALID_SCENE, listOf(ValidationError("scene", AccountErrorCodes.INVALID_SCENE, AccountErrorCodes.INVALID_SCENE)))
         }
         if (scene !in ANON_SCENES) {
-            throw BadRequestException("Scene ${request.scene} requires authentication, use /member/user/send-sms-code")
+            throw BadRequestException(AccountErrorCodes.SCENE_REQUIRES_AUTH, listOf(ValidationError("scene", AccountErrorCodes.SCENE_REQUIRES_AUTH, AccountErrorCodes.SCENE_REQUIRES_AUTH)))
         }
         accountAuthLogic.sendSmsCode(request.mobile, scene)
     }
@@ -139,15 +140,15 @@ class AuthController(
     /** 邮箱验证码（匿名只开放找回密码场景）。 */
     @Post("/send-email-code")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = "Email code sending limit exceeded, please try again later")
+    @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.EMAIL_SEND_RATE_LIMITED)
     suspend fun sendEmailCode(@Body request: controller.app.account.dto.SendEmailCodeRequest) {
-        if (request.scene != "reset_password") throw BadRequestException("Scene ${request.scene} requires authentication, use /member/user/send-email-code")
+        if (request.scene != "reset_password") throw BadRequestException(AccountErrorCodes.SCENE_REQUIRES_AUTH, listOf(ValidationError("scene", AccountErrorCodes.SCENE_REQUIRES_AUTH, AccountErrorCodes.SCENE_REQUIRES_AUTH)))
         accountAuthLogic.sendEmailCode(request.email, "reset_password")
     }
 
     @Put("/reset-password-by-email")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Too many attempts, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.ATTEMPTS_RATE_LIMITED)
     suspend fun resetPasswordByEmail(@Body request: controller.app.account.dto.ResetPasswordByEmailRequest) {
         accountAuthLogic.resetPasswordByEmail(request.email, request.code, request.newPassword)
     }
@@ -161,7 +162,7 @@ class AuthController(
 
     @Post("/social-login")
     @AllowAnonymous
-    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = "Social login attempts exceeded, please try again later")
+    @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.SOCIAL_LOGIN_RATE_LIMITED)
     suspend fun socialLogin(@Body request: SocialLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
         return accountAuthLogic.socialLogin(
             socialType = request.socialType,

@@ -1,5 +1,7 @@
 package controller.admin.nickname
 
+import logic.AccountErrorCodes
+import neton.core.http.ValidationError
 import controller.admin.nickname.dto.ImportNicknameWordsRequest
 import controller.admin.nickname.dto.ImportNicknameWordsResponse
 import controller.admin.nickname.dto.NicknameWordPageResponse
@@ -104,9 +106,12 @@ class NicknameNounController(
         @Body request: UpdateNicknameWordStatusRequest,
     ) {
         val row = AccountNicknameNounTable.get(id)
-            ?: throw NotFoundException("nickname noun id=$id not found")
+            ?: throw NotFoundException(AccountErrorCodes.NICKNAME_WORD_NOT_FOUND)
         if (request.status !in 0..1) {
-            throw BadRequestException("status must be 0 or 1")
+            throw BadRequestException(
+                AccountErrorCodes.INVALID_NICKNAME_WORD_STATUS,
+                listOf(ValidationError("status", AccountErrorCodes.INVALID_NICKNAME_WORD_STATUS, AccountErrorCodes.INVALID_NICKNAME_WORD_STATUS)),
+            )
         }
         val now = Clock.System.now().toEpochMilliseconds()
         AccountNicknameNounTable.update(row.copy(status = request.status, updatedAt = now))
@@ -117,7 +122,7 @@ class NicknameNounController(
     @Permission("account:nickname:delete")
     suspend fun delete(@PathVariable id: Long) {
         val row = AccountNicknameNounTable.get(id)
-            ?: throw NotFoundException("nickname noun id=$id not found")
+            ?: throw NotFoundException(AccountErrorCodes.NICKNAME_WORD_NOT_FOUND)
         AccountNicknameNounTable.destroy(row.id)
         nicknameGenerator.reload()
     }

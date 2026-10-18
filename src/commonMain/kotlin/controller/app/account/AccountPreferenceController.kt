@@ -1,5 +1,6 @@
 package controller.app.account
 
+import logic.AccountErrorCodes
 import controller.app.account.dto.AccountPreferenceListVO
 import controller.app.account.dto.AccountPreferenceVO
 import controller.app.account.dto.PutAccountPreferenceRequest
@@ -34,7 +35,7 @@ class AccountPreferenceController(
         preferences.get(identity.id.toLong(), namespace).toVO()
 
     @Put("/{namespace}")
-    @RateLimit(windowSeconds = 60, maxRequests = 60, scope = RateLimitScope.USER, message = "Too many preference writes, please slow down")
+    @RateLimit(windowSeconds = 60, maxRequests = 60, scope = RateLimitScope.USER, message = AccountErrorCodes.PREFERENCE_WRITE_RATE_LIMITED)
     suspend fun put(
         identity: Identity,
         @PathVariable namespace: String,
@@ -43,7 +44,7 @@ class AccountPreferenceController(
         preferences.put(identity.id.toLong(), namespace, request.value, request.version).toVO()
 
     @Delete("/{namespace}")
-    @RateLimit(windowSeconds = 60, maxRequests = 60, scope = RateLimitScope.USER, message = "Too many preference writes, please slow down")
+    @RateLimit(windowSeconds = 60, maxRequests = 60, scope = RateLimitScope.USER, message = AccountErrorCodes.PREFERENCE_WRITE_RATE_LIMITED)
     suspend fun delete(identity: Identity, @PathVariable namespace: String, @Query version: Long? = null) {
         preferences.delete(identity.id.toLong(), namespace, version)
     }
