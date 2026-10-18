@@ -70,8 +70,8 @@ class AccountAuthLogic(
      * 复核并归一手机号：仅去首尾空格，**不**自动 prepend `+`、**不**做国家级深度校验。
      * 严格要求 E.164（`+` + 8-15 位数字）；非法 → BadRequest INVALID_PHONE_FORMAT。
      *
-     * neton-validation 在多模块 `bindIfAbsent` 模式下后注册的 validator 会被静默忽略
-     * （framework 层 bug），此处兜底确保不正确格式的手机号无法进入认证流程。
+     * HTTP 入口的 DTO 注解（@Pattern E164）已在 handler 之前拦下非法号码；这里服务于不经 HTTP 的
+     * 调用方，并负责 trim 归一，保证不正确格式的手机号无法进入认证流程。
      */
     private fun requireE164(mobile: String): String {
         val trimmed = mobile.trim()
@@ -80,8 +80,8 @@ class AccountAuthLogic(
     }
 
     /**
-     * 新密码长度 8–128，与注册、请求 DTO 注解一致。逻辑层显式再查一遍：多模块装配下注解校验器
-     * 可能没有生效（见 [requireE164] 的说明），不能只靠注解。
+     * 新密码长度 8–128，与注册、请求 DTO 注解一致。HTTP 入口由 DTO 注解先拦；逻辑层再查一遍是给
+     * 不经 HTTP 的调用方（逻辑方法本身的不变量），不是替注解兜底。
      */
     private fun requireNewPassword(password: String) {
         if (password.length < 8) {
