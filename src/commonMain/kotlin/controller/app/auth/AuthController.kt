@@ -11,6 +11,7 @@ import controller.admin.auth.dto.SocialLoginRequest
 import controller.admin.auth.dto.SocialRedirectVO
 import kotlinx.serialization.Serializable
 import enums.SmsScene
+import logic.CaptchaAction
 import neton.core.annotations.*
 import neton.core.http.BadRequestException
 import neton.core.http.HttpRequest
@@ -47,13 +48,15 @@ private val ANON_SCENES = setOf(SmsScene.LOGIN, SmsScene.RESET_PASSWORD)
 
 @Controller("/auth")
 class AuthController(
-    private val accountAuthLogic: AccountAuthLogic
+    private val accountAuthLogic: AccountAuthLogic,
+    private val captcha: logic.CaptchaService,
 ) {
 
     @Post("/login")
     @AllowAnonymous
     @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.LOGIN_RATE_LIMITED)
     suspend fun login(@Body request: AccountLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        httpRequest.requireCaptcha(CaptchaAction.LOGIN)
         return accountAuthLogic.login(request, httpRequest.clientIp())
     }
 
@@ -62,6 +65,7 @@ class AuthController(
     @AllowAnonymous
     @RateLimit(windowSeconds = 3600, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.REGISTER_RATE_LIMITED)
     suspend fun register(@Body request: AccountRegisterRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        httpRequest.requireCaptcha(CaptchaAction.REGISTER)
         return accountAuthLogic.register(request, httpRequest.clientIp())
     }
 
@@ -70,6 +74,7 @@ class AuthController(
     @AllowAnonymous
     @RateLimit(windowSeconds = 300, maxRequests = 10, scope = RateLimitScope.IP, message = AccountErrorCodes.LOGIN_RATE_LIMITED)
     suspend fun loginUsername(@Body request: UsernameLoginRequest, httpRequest: HttpRequest): AccountLoginResponse {
+        httpRequest.requireCaptcha(CaptchaAction.LOGIN)
         return accountAuthLogic.usernameLogin(
             request.username,
             request.password,
@@ -125,7 +130,7 @@ class AuthController(
     @Post("/send-sms-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.SMS_SEND_RATE_LIMITED)
-    suspend fun sendSmsCode(@Body request: AccountSendSmsCodeRequest) {
+    suspend fun sendSmsCode(@Body request: AccountSendSmsCodeRequest, httpRequest: HttpRequest) {
         val scene = try {
             SmsScene.fromScene(request.scene)
         } catch (_: IllegalArgumentException) {
@@ -134,6 +139,7 @@ class AuthController(
         if (scene !in ANON_SCENES) {
             throw BadRequestException(AccountErrorCodes.SCENE_REQUIRES_AUTH, listOf(ValidationError("scene", AccountErrorCodes.SCENE_REQUIRES_AUTH, AccountErrorCodes.SCENE_REQUIRES_AUTH)))
         }
+        httpRequest.requireCaptcha(CaptchaAction.SEND_CODE)
         accountAuthLogic.sendSmsCode(request.mobile, scene)
     }
 
@@ -141,8 +147,9 @@ class AuthController(
     @Post("/send-email-code")
     @AllowAnonymous
     @RateLimit(windowSeconds = 60, maxRequests = 5, scope = RateLimitScope.IP, message = AccountErrorCodes.EMAIL_SEND_RATE_LIMITED)
-    suspend fun sendEmailCode(@Body request: controller.app.account.dto.SendEmailCodeRequest) {
+    suspend fun sendEmailCode(@Body request: controller.app.account.dto.SendEmailCodeRequest, httpRequest: HttpRequest) {
         if (request.scene != "reset_password") throw BadRequestException(AccountErrorCodes.SCENE_REQUIRES_AUTH, listOf(ValidationError("scene", AccountErrorCodes.SCENE_REQUIRES_AUTH, AccountErrorCodes.SCENE_REQUIRES_AUTH)))
+        httpRequest.requireCaptcha(CaptchaAction.SEND_CODE)
         accountAuthLogic.sendEmailCode(request.email, "reset_password")
     }
 
@@ -172,7 +179,12 @@ class AuthController(
             remoteIp = httpRequest.clientIp(),
         )
     }
+
+    /** 人机验证在凭据校验、发码之前：没过就不做密码哈希、不发短信邮件（spec auth-abuse-protection §6.1）。 */
+    private suspend fun HttpRequest.requireCaptcha(action: CaptchaAction) =
+        captcha.require(action, header(logic.CaptchaService.HEADER), clientIp())
 }
+
 
 /**
  * 认证审计与设备记录用的客户端地址：取框架解析后的 [HttpRequest.clientAddress]，与网络准入、
