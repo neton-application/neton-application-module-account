@@ -208,9 +208,9 @@ class AccountAuthLogic(
     }
 
     /** 退出当前会话：同一次登录签出的 access 与 refresh 一起失效（评审 R04）。 */
-    suspend fun logout(userId: Long, sessionId: String?, deviceId: String?) {
-        identityAdapter.logoutSession(userId, sessionId, deviceId)
-        log.info("account.logout", mapOf("userId" to userId))
+    suspend fun logout(identity: neton.core.interfaces.Identity) {
+        logoutCurrentAccountSession(identity, identityAdapter)
+        log.info("account.logout", mapOf("userId" to identity.id))
     }
 
     /**

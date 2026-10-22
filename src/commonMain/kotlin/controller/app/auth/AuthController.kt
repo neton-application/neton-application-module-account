@@ -92,11 +92,7 @@ class AuthController(
 
     @Post("/logout")
     suspend fun logout(identity: neton.core.interfaces.Identity) {
-        accountAuthLogic.logout(
-            identity.id.toLong(),
-            sessionId = (identity as? security.RealmIdentity)?.sessionId,
-            deviceId = (identity as? security.DeviceBoundIdentity)?.deviceId,
-        )
+        accountAuthLogic.logout(identity)
     }
 
     /**
