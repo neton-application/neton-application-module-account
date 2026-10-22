@@ -95,7 +95,7 @@ class AuthController(
         accountAuthLogic.logout(
             identity.id.toLong(),
             sessionId = (identity as? security.RealmIdentity)?.sessionId,
-            deviceId = (identity as? neton.security.jwt.UnifiedIdentity)?.deviceId,
+            deviceId = (identity as? security.DeviceBoundIdentity)?.deviceId,
         )
     }
 
