@@ -70,6 +70,11 @@ object AccountRuntimeBootstrap {
             limits = ctx.getOrNull(AccountPreferenceLogic.Limits::class) ?: AccountPreferenceLogic.Limits(),
         )
         ctx.bind(AccountPreferenceLogic::class, preferenceLogic)
+        // The language a client reported (a preference) is what other modules write the user's text in.
+        ctx.bindIfAbsent(contract.core.UserLanguageReader::class, contract.core.UserLanguageReader { userId ->
+            val value = preferenceLogic.get(userId, contract.core.UserLanguage.PREFERENCE_NAMESPACE).value
+            contract.core.UserLanguage.of((value as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content)
+        })
         ctx.bind(AccountAuthLogic::class, AccountAuthLogic(
             log = loggerFactory.get("logic.account-auth"),
             db = ctx.get(neton.database.api.DbContext::class),
