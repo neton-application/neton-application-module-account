@@ -82,12 +82,17 @@ ksp {
     arg("neton.moduleId", "account")
 }
 
+// KSP 只在一个「生成主机」目标上跑，产物给所有目标共用（生成的是平台无关代码）：
+// Mac 上用 macosArm64，其他主机用 linuxX64 —— Linux 上编不了 Apple 目标，CI / Docker 的 Linux 构建因此不能依赖它。
+val kspHost = if (org.gradle.internal.os.OperatingSystem.current().isMacOsX) "macosArm64" else "linuxX64"
+val kspHostTask = "kspKotlin" + kspHost.replaceFirstChar { it.uppercase() }
+
 // Ensure Kotlin compilation sees KSP-generated commonMain sources.
 // Required because facade tables delegate to generated XxxTableImpl —
 // K2 metadata compilation needs them at the commonMain level.
 afterEvaluate {
     // 把 macosArm64 KSP 输出加到 commonMain，让所有 target 共享（避免每 target 重复生成）。
-    val kspOut = file("build/generated/ksp/macosArm64/macosArm64Main/kotlin")
+    val kspOut = file("build/generated/ksp/$kspHost/${kspHost}Main/kotlin")
     kotlin.sourceSets.named("commonMain") {
         kotlin.srcDir(kspOut)
     }
@@ -104,15 +109,15 @@ afterEvaluate {
 }
 
 tasks.matching { it.name == "compileCommonMainKotlinMetadata" }.configureEach {
-    dependsOn("kspKotlinMacosArm64")
+    dependsOn(kspHostTask)
 }
 tasks.matching { it.name.matches(Regex("compileKotlin(MacosArm64|LinuxX64|LinuxArm64|MingwX64)")) }.configureEach {
-    dependsOn("kspKotlinMacosArm64")
+    dependsOn(kspHostTask)
 }
 // 非 macosArm64 的 KSP 任务也读 macosArm64 的 generated/ksp 输出（commonMain 共享），
 // 必须显式声明依赖，否则 Gradle 8 严格模式把 ./gradlew build 判为 race + FAILED。
-tasks.matching { it.name.matches(Regex("kspKotlin(LinuxX64|LinuxArm64|MingwX64)")) }.configureEach {
-    dependsOn("kspKotlinMacosArm64")
+tasks.matching { it.name.matches(Regex("kspKotlin(MacosArm64|LinuxX64|LinuxArm64|MingwX64)")) && it.name != kspHostTask }.configureEach {
+    dependsOn(kspHostTask)
 }
 
 // 真实数据库契约测试：*DbTest 在 ACCOUNT_DB_URI 缺省时整组跳过，普通 macosArm64Test 照常绿；
