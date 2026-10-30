@@ -31,5 +31,7 @@ App 路由保持拆分前的路径不变（已发出的客户端在用）：`/au
 
 ## 迁移
 
-`sql/postgresql/V001__adopt_account_tables.sql`：存量库把 member 建出的账号表原地改名接管，
-全新安装按终态建表。见文件头注释。
+1.0.0-beta 空库初始化使用 `sql/postgresql/V001__schema.sql` 和
+`sql/postgresql/V002__data.sql`，按最终结构直接创建 account 的表。
+发布前的 member 表接管历史已收敛进这套基线；旧测试库需重建，不能清空迁移记录
+后原地套用。重新编译分发应用后走正式迁移命令，详见 `sql/README.md`。

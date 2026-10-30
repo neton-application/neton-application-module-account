@@ -1,0 +1,29 @@
+{
+  "release": "1.0.0-beta",
+  "module": "account",
+  "fresh_install_only": true,
+  "dependencies": [
+    "system",
+    "infra"
+  ],
+  "baseline": [
+    {
+      "file": "V001__schema.sql",
+      "sha256": "4ad57cc8f1c17138b14c760d63ded4e1ad1a46273ed034d12d0dd47183170d1a"
+    },
+    {
+      "file": "V002__data.sql",
+      "sha256": "2a3506aaac4313d4ce417e85ff78454b0a58a0c6c1e61d5d2898608d48243cdd"
+    }
+  ],
+  "superseded": [
+    {
+      "name": "V001__adopt_account_tables.sql",
+      "sha256": "b78a59f62e05b84e5489469b19396d825b160e81941fd7c3ead5f1ad8c834334"
+    },
+    {
+      "name": "V002__account_preferences.sql",
+      "sha256": "d79d068ccc4b8239ba0e46fff8a7250cb8cae764c2188e0965f52546aded30e3"
+    }
+  ]
+}
