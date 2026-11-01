@@ -1,3 +1,5 @@
+@file:OptIn(neton.core.annotations.InternalNetonApi::class)
+
 package logic
 
 import init.generated.AccountMigrationResources
