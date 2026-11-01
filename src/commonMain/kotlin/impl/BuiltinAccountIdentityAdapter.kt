@@ -1,5 +1,6 @@
 package impl
 
+import logic.AccountDeviceId
 import logic.AccountErrorCodes
 import model.Account
 import model.AccountStatus
@@ -22,9 +23,7 @@ import setting.AccountSettingKeys
 import setting.currentValue
 import neton.security.identity.UserId
 import neton.security.jwt.JwtAuthenticator
-import kotlin.random.Random
 import kotlin.time.Clock
-import kotlin.time.ExperimentalTime
 
 /**
  * 内置身份后端（自托管账号，无外部 server）。
@@ -90,7 +89,7 @@ class BuiltinAccountIdentityAdapter(
             .first().long("id")
 
     override suspend fun issueToken(command: IssueMemberTokenCommand): AccountTokenBundle {
-        val deviceId = command.deviceId?.takeIf { it.isNotBlank() } ?: mintDeviceId()
+        val deviceId = AccountDeviceId.require(command.deviceId, "device.deviceId")
         val member = AccountTable.get(command.memberId)
         var sessionVersion = member?.sessionVersion ?: 0L
 
@@ -109,7 +108,7 @@ class BuiltinAccountIdentityAdapter(
             }
         }
 
-        return buildBundle(command.memberId, deviceId, sessionVersion, deviceCreated = command.deviceId.isNullOrBlank(), sessionId = SessionRevocation.newId())
+        return buildBundle(command.memberId, deviceId, sessionVersion, deviceCreated = false, sessionId = SessionRevocation.newId())
     }
 
     /**
@@ -155,7 +154,7 @@ class BuiltinAccountIdentityAdapter(
             revocation.revokeSession(REALM, sessionId, REFRESH_TTL_SECONDS)
             throw HttpException(NetonErrorCode.REFRESH_TOKEN_REVOKED, AccountErrorCodes.REFRESH_TOKEN_REVOKED)
         }
-        val deviceId = command.deviceId?.takeIf { it.isNotBlank() } ?: mintDeviceId()
+        val deviceId = AccountDeviceId.require(command.deviceId, "deviceId")
         return buildBundle(memberId, deviceId, sessionVersion, deviceCreated = false, sessionId = sessionId)
     }
 
@@ -213,8 +212,4 @@ class BuiltinAccountIdentityAdapter(
             scope = SCOPE, issuer = ISSUER,
         )
     }
-
-    @OptIn(ExperimentalTime::class)
-    private fun mintDeviceId(): String =
-        "d-${Clock.System.now().toEpochMilliseconds().toString(36)}-${Random.nextInt(0, 0x1000000).toString(36)}"
 }

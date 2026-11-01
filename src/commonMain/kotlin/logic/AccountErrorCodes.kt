@@ -25,8 +25,10 @@ object AccountErrorCodes {
     const val INVALID_REFRESH_TOKEN_SUBJECT = "INVALID_REFRESH_TOKEN_SUBJECT"
     const val REFRESH_TOKEN_EXPIRED = "REFRESH_TOKEN_EXPIRED"
     const val REFRESH_TOKEN_REVOKED = "REFRESH_TOKEN_REVOKED"
-    /** 刷新令牌必须带签发时的 deviceId。 */
+    /** 登录 / 注册 / 刷新令牌必须带客户端持久化的 deviceId。 */
     const val DEVICE_ID_REQUIRED = "DEVICE_ID_REQUIRED"
+    /** deviceId 不是小写带连字符的 UUID v4（见 [AccountDeviceId]）。 */
+    const val INVALID_DEVICE_ID = "INVALID_DEVICE_ID"
 
     // ---- 手机号 ----
     /** 手机号格式不对（用户身份手机号要求 E.164，如 `+8615000000000`）或为空。 */

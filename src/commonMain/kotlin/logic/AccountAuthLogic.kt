@@ -110,6 +110,7 @@ class AccountAuthLogic(
      * 账号停用 / 注销的提示只在密码正确之后给出，不构成枚举。
      */
     suspend fun login(request: AccountLoginRequest, remoteIp: String? = null): AccountLoginResponse {
+        requireDeviceId(request.device)
         val mobile = requireE164(request.mobile)
         throttle.ensureNotLocked(REALM, mobile, remoteIp)
         val found = AccountTable.oneWhere { Account::mobile eq mobile }
@@ -135,6 +136,7 @@ class AccountAuthLogic(
     }
 
     suspend fun smsLogin(request: AccountLoginRequest, remoteIp: String? = null): AccountLoginResponse {
+        requireDeviceId(request.device)
         val mobile = requireE164(request.mobile)
         val smsCode = request.smsCode ?: throw HttpException(
             NetonErrorCode.MISSING_REQUIRED_PARAM,
@@ -218,12 +220,7 @@ class AccountAuthLogic(
      * session_version 校验全部由 server 完成；application 不再持有自签 refresh token。
      */
     suspend fun refreshToken(refreshToken: String, requestDeviceId: String?): AccountLoginResponse {
-        val deviceId = requestDeviceId?.takeIf { it.isNotBlank() }
-            ?: throw HttpException(
-                NetonErrorCode.MISSING_REQUIRED_PARAM,
-                E.DEVICE_ID_REQUIRED,
-                listOf(ValidationError("deviceId", E.DEVICE_ID_REQUIRED, E.DEVICE_ID_REQUIRED)),
-            )
+        val deviceId = AccountDeviceId.require(requestDeviceId, "deviceId")
         val bundle = identityAdapter.refreshToken(
             RefreshMemberTokenCommand(refreshToken = refreshToken, deviceId = deviceId),
         )
@@ -373,6 +370,7 @@ class AccountAuthLogic(
         device: LoginDeviceInfo?,
         remoteIp: String? = null,
     ): AccountLoginResponse {
+        requireDeviceId(device)
         val social = socialUserLogic
             ?: throw HttpException(NetonErrorCode.SERVICE_UNAVAILABLE, E.SOCIAL_LOGIN_UNAVAILABLE)
 
@@ -484,6 +482,7 @@ class AccountAuthLogic(
         request: controller.app.auth.dto.AccountRegisterRequest,
         remoteIp: String? = null,
     ): AccountLoginResponse {
+        requireDeviceId(request.device)
         if (request.mode != port.AccountAuthPolicy.MODE_USERNAME_PASSWORD) {
             throw BadRequestException(E.UNSUPPORTED_REGISTER_MODE, listOf(ValidationError("mode", E.UNSUPPORTED_REGISTER_MODE, E.UNSUPPORTED_REGISTER_MODE)))
         }
@@ -536,6 +535,7 @@ class AccountAuthLogic(
         device: LoginDeviceInfo?,
         remoteIp: String? = null,
     ): AccountLoginResponse {
+        requireDeviceId(device)
         val normalized = username.trim().lowercase()
         // 凭证错误是认证失败(401/10011),不是参数错误(400/10100);message 用机器码,
         // 客户端按码映射本地化文案(用户拍板:错误必须人话,不泄原始异常)。
@@ -601,6 +601,13 @@ class AccountAuthLogic(
         )
     }
 
+    /**
+     * Every entry that ends in a token checks the device id first, before it consumes a one-time
+     * code or creates an account, so a bad device id never leaves half-done work behind.
+     */
+    private fun requireDeviceId(device: LoginDeviceInfo?): String =
+        AccountDeviceId.require(device?.deviceId, "device.deviceId")
+
     private fun String?.normalizedIp(): String? =
         this?.trim()?.takeIf { it.isNotEmpty() }?.take(64)
 
@@ -624,11 +631,13 @@ class AccountAuthLogic(
         device: LoginDeviceInfo?,
         remoteIp: String? = null,
     ): AccountLoginResponse {
+        // The client owns the device id (a persisted UUID v4); the server never mints one.
+        val deviceId = requireDeviceId(device)
         // device 信息透传给 adapter;具体后端(privchat)再映射成它的设备/令牌请求。
         val bundle = identityAdapter.issueToken(
             IssueMemberTokenCommand(
                 memberId = uid,
-                deviceId = device?.deviceId?.takeIf { it.isNotBlank() },
+                deviceId = deviceId,
                 platform = device?.platform?.takeIf { it.isNotBlank() },
                 deviceName = device?.deviceName?.takeIf { it.isNotBlank() },
                 deviceModel = device?.deviceModel?.takeIf { it.isNotBlank() },
