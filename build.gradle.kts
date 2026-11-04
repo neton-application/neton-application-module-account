@@ -123,7 +123,7 @@ tasks.matching { it.name.matches(Regex("kspKotlin(MacosArm64|LinuxX64|LinuxArm64
 // 真实数据库契约测试：*DbTest 在 ACCOUNT_DB_URI 缺省时整组跳过，普通 macosArm64Test 照常绿；
 // 要真跑就用这个任务（角色须有 CREATEDB）：
 //   ACCOUNT_DB_URI=postgresql://user:pass@localhost:5432/postgres ./gradlew postgresContractTest
-val postgresContractClasses = listOf("logic.AccountPreferenceDbTest")
+val postgresContractClasses = listOf("logic.AccountPreferenceDbTest", "logic.AccountPreferenceHttpDispatchTest")
 
 tasks.register<Exec>("postgresContractTest") {
     group = "verification"
