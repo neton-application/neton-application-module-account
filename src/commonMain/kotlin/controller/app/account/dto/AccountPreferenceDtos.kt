@@ -23,6 +23,8 @@ data class AccountPreferenceVO(
     val value: JsonElement?,
     val version: Long,
     val updatedAt: Long?,
+    /** Resolved server text package for app.language; the original BCP 47 value is not rewritten. */
+    val effectiveLanguage: String? = null,
 )
 
 @Serializable

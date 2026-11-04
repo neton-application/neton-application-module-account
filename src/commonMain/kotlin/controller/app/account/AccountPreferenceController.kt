@@ -16,6 +16,10 @@ import neton.core.annotations.Query
 import neton.core.annotations.RateLimit
 import neton.core.annotations.RateLimitScope
 import neton.core.interfaces.Identity
+import neton.core.http.HttpContext
+import contract.core.LanguageReaderRegistry
+import contract.core.UserLanguage
+import contract.core.attachRequestLanguage
 
 /**
  * 当前登录用户的偏好（`/app/account/preferences/…`，spec application/account-preferences.md）。
@@ -24,6 +28,7 @@ import neton.core.interfaces.Identity
 @Controller("/account/preferences")
 class AccountPreferenceController(
     private val preferences: AccountPreferenceLogic,
+    private val languages: LanguageReaderRegistry,
 ) {
 
     @Get("")
@@ -31,8 +36,14 @@ class AccountPreferenceController(
         AccountPreferenceListVO(preferences.list(identity.id.toLong()).map { it.toVO() })
 
     @Get("/{namespace}")
-    suspend fun get(identity: Identity, @PathVariable namespace: String): AccountPreferenceVO =
-        preferences.get(identity.id.toLong(), namespace).toVO()
+    suspend fun get(identity: Identity, @PathVariable namespace: String, http: HttpContext): AccountPreferenceVO {
+        val preference = preferences.get(identity.id.toLong(), namespace).toVO()
+        if (namespace != UserLanguage.PREFERENCE_NAMESPACE) return preference
+        // This controller is auth-gated to account. Attach only at the text consumer, before fan-out;
+        // no global framework hook or preference query on unrelated/error-only routes is necessary.
+        val language = http.attachRequestLanguage(languages, identity, "account")?.languageOrNull()
+        return preference.copy(effectiveLanguage = language?.tag)
+    }
 
     @Put("/{namespace}")
     @RateLimit(windowSeconds = 60, maxRequests = 60, scope = RateLimitScope.USER, message = AccountErrorCodes.PREFERENCE_WRITE_RATE_LIMITED)

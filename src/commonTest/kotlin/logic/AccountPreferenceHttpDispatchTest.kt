@@ -7,6 +7,18 @@ import init.generated.InfraMigrationResources
 import init.generated.SystemMigrationResources
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.JsonPrimitive
+import contract.core.LanguageReaderRegistry
+import impl.BuiltinAccountIdentityAdapter
+import model.Account
+import table.AccountTable
+import neton.security.password.PasswordHasher
+import controller.admin.auth.dto.LoginDeviceInfo
+import logic.provider.MessageProvider
+import model.MessageChannel
+import model.MessageTemplate
+import table.MessageChannelTable
+import table.MessageTemplateTable
+import neton.database.dsl.*
 import neton.core.component.NetonContext
 import neton.core.config.getEnv
 import neton.core.http.adapter.HttpServerConfig
@@ -61,11 +73,13 @@ import kotlin.test.fail
  *    same numeric id across admin/account does not authenticate on the wrong side.
  *
  * What it deliberately does NOT claim (recorded so a helper test is never read as the full flow):
- *  - the account is a TEST-ONLY realm resolver that trusts a directly-issued HS256 token; this is not the
- *    product login / MFA / session-revocation path;
- *  - there is still no per-request `attachRequestLanguage` hook wired into the dispatch pipeline (the
- *    framework exposes none), so request-scoped language *attach* is NOT proven here;
- *  - no headless browser / SSR is involved (see spec 9, 10).
+ *  - credentials run through production AccountAuthLogic.usernameLogin and BuiltinAccountIdentityAdapter;
+ *    requests then use production AccountTokenRealm (including account state/session-version checks).
+ *    The login controller's CAPTCHA transport and socket listener are not exercised by this dispatch test.
+ *  - the production preference controller lazily attaches request language at its actual consumer; the
+ *    original access token sees preference changes. No global framework hook is needed.
+ *  - notification composition uses both real realm readers, while delivery is captured instead of sent.
+ *  - no headless browser is involved in this native test; browser evidence is recorded separately.
  *
  * Requires `ACCOUNT_DB_URI` (PostgreSQL role with CREATEDB); skipped when unset, like the other account DbTests.
  */
@@ -79,7 +93,8 @@ class AccountPreferenceHttpDispatchTest {
         override fun error(msg: String, fields: Fields, cause: Throwable?) {}
     }
 
-    private val uid = 70001L
+    private var uid = 0L
+    private var accountAccessToken = ""
 
     @Test
     fun `authenticated dotted preference path round trips over real http dispatch and rejects anonymous and wrong realm`() {
@@ -123,9 +138,18 @@ class AccountPreferenceHttpDispatchTest {
                 val text = get.body.decodeToString()
                 assertTrue("app.language" in text, "the dotted key must survive the wire, got: $text")
                 assertTrue("en-US" in text, "the stored value must round-trip, got: $text")
+                assertTrue("\"effectiveLanguage\":\"en\"" in text, "production request consumer resolves the account reader")
                 // and it landed under the correct subject id (taken from the session, not a request arg).
                 val stored = AccountPreferenceLogic(Quiet, db).get(uid, "app.language")
                 assertEquals("en-US", (stored.value as? JsonPrimitive)?.content)
+
+                val updated = dispatcher.dispatch(BufferedHttpRequest("PUT", "/app/account/preferences/app.language", "", json,
+                    "{\"value\":\"zh-CN\",\"version\":1}".encodeToByteArray()))
+                assertEquals(200, updated.status)
+                val sameToken = dispatcher.dispatch(BufferedHttpRequest("GET", "/app/account/preferences/app.language", "", bearer, ByteArray(0)))
+                assertTrue("\"effectiveLanguage\":\"zh-CN\"" in sameToken.body.decodeToString(),
+                    "the exact same access token sees the new language on the next real request")
+                verifyRealRecipientReaders(db)
 
                 // (d) a wrong-realm token cannot authenticate this realm's route group (same numeric id).
                 val wrongRealm = mapOf("Authorization" to listOf("Bearer ${signedToken("admin")}"))
@@ -142,7 +166,7 @@ class AccountPreferenceHttpDispatchTest {
         }
     }
 
-    private fun buildDispatcher(db: DbContext): BufferedHttpDispatcher {
+    private suspend fun buildDispatcher(db: DbContext): BufferedHttpDispatcher {
         val ctx = NetonContext(emptyArray())
         val routes = mutableListOf<RouteDefinition>()
         ctx.bind(RequestEngine::class, object : RequestEngine {
@@ -150,19 +174,22 @@ class AccountPreferenceHttpDispatchTest {
             override fun getRoutes() = routes.toList()
         })
         ctx.bind(AccountPreferenceLogic::class, AccountPreferenceLogic(Quiet, db))
+        ctx.bind(LanguageReaderRegistry::class, LanguageReaderRegistry(readers = mapOf(
+            "account" to userLanguageReaderFromPreferences(ctx.get(AccountPreferenceLogic::class)),
+        )))
         AccountRouteInitializer.initialize(ctx)
 
         val jwt = JwtAuthenticator(secretKey = "account-http-dispatch-test-only-secret-0123456789")
+        val adapter = BuiltinAccountIdentityAdapter(jwt, db)
+        val password = "isolated-i18n-fixture-password"
+        val reference = adapter.createOrBindAccount(port.CreateMemberAccountCommand(username = "i18n-fixture"))
+        val account = insertAccountWithProvidedId(db, Account(id = reference.memberId, username = "i18n-fixture", nickname = "Fixture", password = PasswordHasher.hash(password)))
+        uid = account.id
+        val login = AccountAuthLogic(Quiet, db, adapter, RequiredActionsLogic(AccountLogic(Quiet, db)))
+            .usernameLogin("i18n-fixture", password, LoginDeviceInfo(deviceId = "bb7e5423-3533-4ecd-8ef1-6c79f10a9dd2"), "127.0.0.1")
+        accountAccessToken = login.accessToken
         val registry = TokenRealmRegistry()
-        registry.register(object : TokenRealm {
-            override val name = "account"
-            override val routeGroups = setOf("app")
-            override val acceptsExternalTokens = false
-            override suspend fun resolve(token: VerifiedJwtToken): Identity? {
-                if (token.claimString(TokenRealm.TYPE_CLAIM) != TokenRealm.TYPE_ACCESS) return null
-                return RealmIdentity(token.identity.userId, setOf("account"), emptySet(), "account", null)
-            }
-        })
+        registry.register(security.AccountTokenRealm { adapter })
         val authenticator = RealmAuthenticator(jwt, null, registry, "Authorization", "Bearer ", "neton_session")
         val guard = DefaultGuardImpl()
         ctx.bind(
@@ -185,8 +212,40 @@ class AccountPreferenceHttpDispatchTest {
 
     private var jwtForTokens: JwtAuthenticator? = null
 
+    private suspend fun verifyRealRecipientReaders(db: DbContext) {
+        // Both owners' actual stores/readers, with the SAME numeric subject ID. No fake account reader.
+        db.execute("""INSERT INTO system_users (id,username,nickname,password_hash,locale,status)
+            VALUES (:id,'i18n-admin','Operator','not-a-login-hash','en-US',1)
+            ON CONFLICT (id) DO UPDATE SET locale = 'en-US'""", mapOf("id" to uid))
+        val readers = LanguageReaderRegistry(readers = mapOf(
+            "admin" to adminLanguageReader(),
+            "account" to userLanguageReaderFromPreferences(AccountPreferenceLogic(Quiet, db)),
+        ))
+        assertEquals(contract.core.UserLanguage.EN, readers.contextFor("admin", uid).languageOrNull())
+        assertEquals(contract.core.UserLanguage.ZH_CN, readers.contextFor("account", uid).languageOrNull())
+        val delivered = mutableListOf<String>()
+        val provider = object : MessageProvider {
+            override val type = "email"
+            override suspend fun send(receiver: String, content: String, config: String): Boolean {
+                delivered += content
+                return true
+            }
+        }
+        val channel = MessageChannelTable.insert(MessageChannel(name = "Isolated", code = "i18n-fixture", type = "email", status = 1))
+        MessageTemplateTable.insert(MessageTemplate(name = "English", code = "i18n", content = "Hello {{name}}", language = "en", channelId = channel.id))
+        MessageTemplateTable.insert(MessageTemplate(name = "Chinese", code = "i18n", content = "你好 {{name}}", language = "zh-CN", channelId = channel.id))
+        val sender = MessageSendLogic(Quiet, MessageChannelLogic(Quiet, mapOf("email" to provider)), MessageTemplateLogic(Quiet), readers)
+        assertTrue(sender.sendByTemplate("i18n", "fixture@example.invalid", mapOf("name" to "A"), uid, 1))
+        assertTrue(sender.sendByTemplate("i18n", "fixture@example.invalid", mapOf("name" to "B"), uid, 2))
+        assertEquals(listOf("Hello A", "你好 B"), delivered)
+        val snapshot = table.MessageLogTable.query { orderBy(model.MessageLog::id.asc()) }.list().last()
+        AccountPreferenceLogic(Quiet, db).put(uid, "app.language", JsonPrimitive("en-US"), 2L)
+        assertTrue(sender.resend(snapshot.id))
+        assertEquals("你好 B", delivered.last(), "retry replays the snapshot after the real recipient preference changes")
+    }
+
     private fun signedToken(realm: String): String =
-        (jwtForTokens ?: error("dispatcher not built")).createToken(
+        if (realm == "account") accountAccessToken else (jwtForTokens ?: error("dispatcher not built")).createToken(
             UserId(uid.toULong()),
             expiresInSeconds = 7200,
             extraClaims = mapOf(TokenRealm.CLAIM to realm, TokenRealm.TYPE_CLAIM to TokenRealm.TYPE_ACCESS),
