@@ -70,8 +70,16 @@ object AccountRuntimeBootstrap {
             limits = ctx.getOrNull(AccountPreferenceLogic.Limits::class) ?: AccountPreferenceLogic.Limits(),
         )
         ctx.bind(AccountPreferenceLogic::class, preferenceLogic)
-        // The language a client reported (a preference) is what other modules write the user's text in.
-        ctx.bindIfAbsent(contract.core.UserLanguageReader::class, logic.userLanguageReaderFromPreferences(preferenceLogic))
+        // Realm-scoped language resolution: register the account subject's reader into the shared
+        // contract registry so a request resolves the reported language through the reader selected by
+        // the authenticated realm, instead of a single global reader that two realms would fight over.
+        // The site default is an assembly-level policy (spec 3.3): reuse a registry the assembly already
+        // bound when present, otherwise create one at this module-composition boundary.
+        val languageReaders = ctx.getOrNull(contract.core.LanguageReaderRegistry::class)
+            ?: contract.core.LanguageReaderRegistry(siteDefault = contract.core.UserLanguage.DEFAULT).also {
+                ctx.bind(contract.core.LanguageReaderRegistry::class, it)
+            }
+        languageReaders.register(impl.BuiltinAccountIdentityAdapter.REALM, logic.userLanguageReaderFromPreferences(preferenceLogic))
         ctx.bind(AccountAuthLogic::class, AccountAuthLogic(
             log = loggerFactory.get("logic.account-auth"),
             db = ctx.get(neton.database.api.DbContext::class),
