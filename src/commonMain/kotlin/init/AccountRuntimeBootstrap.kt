@@ -73,10 +73,11 @@ object AccountRuntimeBootstrap {
         // Realm-scoped language resolution: register the account subject's reader into the shared
         // contract registry so a request resolves the reported language through the reader selected by
         // the authenticated realm, instead of a single global reader that two realms would fight over.
-        // The site default is an assembly-level policy (spec 3.3): reuse a registry the assembly already
-        // bound when present, otherwise create one at this module-composition boundary.
+        // The site default is the product assembly's policy (spec 3.3), never a module's: account only
+        // contributes its realm reader. Reuse the assembly's registry when it already bound one; if this
+        // module composes first, create the container without a default so no language is invented here.
         val languageReaders = ctx.getOrNull(contract.core.LanguageReaderRegistry::class)
-            ?: contract.core.LanguageReaderRegistry(siteDefault = contract.core.UserLanguage.DEFAULT).also {
+            ?: contract.core.LanguageReaderRegistry().also {
                 ctx.bind(contract.core.LanguageReaderRegistry::class, it)
             }
         languageReaders.register(impl.BuiltinAccountIdentityAdapter.REALM, logic.userLanguageReaderFromPreferences(preferenceLogic))
